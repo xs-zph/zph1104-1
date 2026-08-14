@@ -64,6 +64,18 @@ CREATE TABLE IF NOT EXISTS ticket_feedback_tags (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# 知识库条目表（FAQ 的结构化源，支持软删除 / 编辑 / 审计）
+_FAQ_ENTRIES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS faq_entries (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    question      TEXT NOT NULL,
+    answer        TEXT NOT NULL,
+    enabled       TINYINT(1) NOT NULL DEFAULT 1,  -- 1 启用 / 0 软删除
+    created_at    DATETIME,
+    updated_at    DATETIME
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 # 用户表（登录用）
 _USERS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -140,6 +152,7 @@ def init_db():
             cur.execute(_ORDERS_SCHEMA)
             cur.execute(_TICKET_LOGS_SCHEMA)
             cur.execute(_FEEDBACK_TAGS_SCHEMA)
+            cur.execute(_FAQ_ENTRIES_SCHEMA)
             _migrate(cur)
     finally:
         conn.close()
@@ -575,5 +588,105 @@ def list_all_feedback_tags(limit: int = 200) -> list[dict]:
             cur.execute("SELECT * FROM ticket_feedback_tags ORDER BY id DESC LIMIT %s",
                         (limit,))
             return cur.fetchall()
+    finally:
+        conn.close()
+
+
+# ---------------- 知识库条目（FAQ 结构化源，软删除 / 编辑） ----------------
+
+def list_faq_entries(enabled_only: bool = False) -> list[dict]:
+    """列出知识库条目。enabled_only=True 时只返回启用中的条目。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            if enabled_only:
+                cur.execute("SELECT * FROM faq_entries WHERE enabled = 1 ORDER BY id")
+            else:
+                cur.execute("SELECT * FROM faq_entries ORDER BY id")
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_faq_entry(faq_id: int) -> dict | None:
+    """按 id 查询单条知识库条目。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM faq_entries WHERE id = %s", (faq_id,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def insert_faq_entry(question: str, answer: str) -> int:
+    """新增一条知识库条目，返回自增 id。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO faq_entries (question, answer, enabled, created_at, updated_at) "
+                "VALUES (%s, %s, 1, %s, %s)",
+                (question, answer, now, now),
+            )
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_faq_entry(faq_id: int, question: str | None = None,
+                     answer: str | None = None) -> dict | None:
+    """更新知识库条目的问题/答案（只更新非空字段），返回更新后的条目。"""
+    updates = {}
+    if question is not None:
+        updates["question"] = question
+    if answer is not None:
+        updates["answer"] = answer
+    if updates:
+        updates["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cols = ", ".join(f"{k} = %s" for k in updates)
+        conn = _connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE faq_entries SET {cols} WHERE id = %s",
+                            list(updates.values()) + [faq_id])
+        finally:
+            conn.close()
+    return get_faq_entry(faq_id)
+
+
+def set_faq_enabled(faq_id: int, enabled: bool) -> dict | None:
+    """启用 / 软删除一条知识库条目（软删除 = enabled 置 0，不物理删数据）。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE faq_entries SET enabled = %s, updated_at = %s WHERE id = %s",
+                (1 if enabled else 0,
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"), faq_id),
+            )
+    finally:
+        conn.close()
+    return get_faq_entry(faq_id)
+
+
+def clear_faq_entries() -> None:
+    """清空知识库条目表（重置知识库时用）。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM faq_entries")
+    finally:
+        conn.close()
+
+
+def count_faq_entries() -> int:
+    """知识库条目总数（含软删除）。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS n FROM faq_entries")
+            return cur.fetchone()["n"]
     finally:
         conn.close()

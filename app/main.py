@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import auth, config, db, memory, metrics, rag, router, wechat
 from app.config import setup_logging
-from app.schemas import FAQCreate, FeedbackRequest, LoginOut, LoginRequest, OrderCreate, OrderUpdate, ResolveRequest, TicketCreate
+from app.schemas import FAQCreate, FAQUpdate, FeedbackRequest, LoginOut, LoginRequest, OrderCreate, OrderUpdate, ResolveRequest, TicketCreate
 
 # 初始化日志 + 数据库 + 演示账号 + 演示订单
 setup_logging()
@@ -29,8 +29,10 @@ db.init_db()
 auth.seed_users()
 db.seed_orders()
 
-# 后台预热 RAG 向量化模型，避免首个 FAQ 请求等待模型冷加载（约几十秒）
+# 后台预热 RAG 向量化模型 + 确保知识库已从 faq.md 导入 MySQL 并同步到向量库
+# （避免首个 FAQ 请求等待模型冷加载；老库迁移时补种知识库表）
 threading.Thread(target=rag.warmup, daemon=True).start()
+threading.Thread(target=rag.ensure_faq_seeded, daemon=True).start()
 
 app = FastAPI(
     title="AI客服工单自动化系统",
@@ -234,18 +236,45 @@ def delete_order(order_id: str, username: str = Depends(auth.require_admin)):
 # ---------------- 知识库管理（仅管理员，实时更新 RAG） ----------------
 
 @app.get("/api/faq")
-def list_faq(username: str = Depends(auth.require_admin)):
-    """列出知识库当前所有问答对。"""
-    return rag.list_entries()
+def list_faq(include_disabled: bool = False, username: str = Depends(auth.require_admin)):
+    """列出知识库条目；include_disabled=true 时含软删除的条目。"""
+    return rag.list_entries(include_disabled=include_disabled)
 
 
 @app.post("/api/faq")
 def add_faq(payload: FAQCreate, username: str = Depends(auth.require_admin)):
-    """实时新增一条 FAQ：写入向量库并持久化，无需重启即可生效。"""
+    """实时新增一条知识：写入 MySQL 并同步向量库，无需重启即可生效。"""
     try:
         return rag.add_entry(payload.question, payload.answer)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/faq/{faq_id}")
+def update_faq(faq_id: int, payload: FAQUpdate, username: str = Depends(auth.require_admin)):
+    """编辑一条知识库条目（问题/答案可部分更新），并同步向量库。"""
+    try:
+        return rag.update_entry(faq_id, question=payload.question, answer=payload.answer)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/faq/{faq_id}")
+def disable_faq(faq_id: int, username: str = Depends(auth.require_admin)):
+    """软删除一条知识库条目（从向量库移除，数据保留可恢复）。"""
+    try:
+        return rag.disable_entry(faq_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/faq/{faq_id}/restore")
+def restore_faq(faq_id: int, username: str = Depends(auth.require_admin)):
+    """重新启用一条被软删除的知识库条目。"""
+    try:
+        return rag.enable_entry(faq_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ---------------- 微信公众号接入（无需登录，供微信服务器回调） ----------------

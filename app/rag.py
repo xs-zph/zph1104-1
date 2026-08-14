@@ -25,7 +25,7 @@ import numpy as np
 from chromadb.api.types import Documents, Embeddings, EmbeddingFunction
 from chromadb.utils import embedding_functions
 
-from app import config
+from app import config, db, llm
 
 logger = logging.getLogger("app.rag")
 
@@ -159,35 +159,62 @@ def parse_faq(faq_path) -> list[dict]:
     return pairs
 
 
-def ingest(faq_path=None, reset: bool = True):
-    """把 FAQ 文档写入向量库。
+def sync_faq_to_chroma() -> int:
+    """把 MySQL 里「启用中」的知识库条目同步到 ChromaDB（增删改后调用，热更新）。
+
+    ChromaDB 的 id 用 "faq-{db主键}"，这样编辑 / 软删都能精确定位，
+    不需要重启服务即可生效。软删除的条目会从向量库里移除。
+    """
+    entries = db.list_faq_entries(enabled_only=True)
+    collection = get_collection()
+
+    if entries:
+        collection.upsert(
+            ids=[f"faq-{e['id']}" for e in entries],
+            documents=[e["question"] for e in entries],
+            metadatas=[{"answer": e["answer"], "faq_id": e["id"]} for e in entries],
+        )
+
+    # 删除向量库里「已不在启用列表」的旧条目（含软删 / 被删除的）
+    enabled_ids = {f"faq-{e['id']}" for e in entries}
+    existing = collection.get()
+    stale = [i for i in existing.get("ids", []) if i not in enabled_ids]
+    if stale:
+        collection.delete(ids=stale)
+
+    logger.info("知识库已同步到向量库：启用 %d 条，清理 %d 条", len(entries), len(stale))
+    return len(entries)
+
+
+def ensure_faq_seeded() -> None:
+    """启动时确保知识库已从 faq.md 导入 MySQL（首次运行 / 老库迁移时补种）。
+
+    幂等：表里已有数据就直接同步（保证 ChromaDB 与 MySQL 一致）。
+    """
+    if db.count_faq_entries() == 0:
+        logger.info("知识库表为空，从 faq.md 导入种子数据")
+        ingest(reset=False)
+    else:
+        sync_faq_to_chroma()
+
+
+def ingest(faq_path=None, reset: bool = True) -> int:
+    """把 data/faq.md 的问答导入 MySQL 知识库，并同步到向量库。
 
     参数：
-      reset=True 时先清空旧数据再写入，保证可重复执行。
+      reset=True 时先清空 MySQL 里的知识库条目再导入（保证可重复执行）。
     """
     faq_path = faq_path or config.Config.FAQ_PATH
     pairs = parse_faq(faq_path)
 
     if reset:
-        # 清空旧数据（ChromaDB 通过删除集合来重置）
-        client = chromadb.PersistentClient(path=str(config.Config.CHROMA_DIR))
-        try:
-            client.delete_collection("faq")
-        except Exception:
-            pass
-        collection = client.create_collection(
-            name="faq", embedding_function=_get_embedding_fn()
-        )
-    else:
-        collection = get_collection()
+        db.clear_faq_entries()
+    for p in pairs:
+        db.insert_faq_entry(p["question"], p["answer"])
 
-    ids = [str(i) for i in range(len(pairs))]
-    documents = [p["question"] for p in pairs]
-    metadatas = [{"answer": p["answer"]} for p in pairs]
-
-    collection.add(ids=ids, documents=documents, metadatas=metadatas)
-    logger.info("知识库写入完成，共 %d 条", len(pairs))
-    return len(pairs)
+    count = sync_faq_to_chroma()
+    logger.info("知识库导入完成，启用 %d 条", count)
+    return count
 
 
 def retrieve(query: str, top_k: int = None) -> list[dict]:
@@ -232,39 +259,110 @@ def best_answer(question: str, top_k: int = None) -> dict | None:
     return best
 
 
-def list_entries() -> list[dict]:
-    """返回知识库当前所有问答对（供后台展示）。"""
-    return parse_faq(config.Config.FAQ_PATH)
+def list_entries(include_disabled: bool = False) -> list[dict]:
+    """返回知识库条目（默认只返回启用中；include_disabled=True 含软删除）。"""
+    return db.list_faq_entries(enabled_only=not include_disabled)
 
 
 def add_entry(question: str, answer: str) -> dict:
-    """实时新增一条 FAQ：写入向量库 + 追加到 faq.md（持久化），无需重启。
-
-    新增后立刻能被 retrieve() 检索到，实现知识库的「实时更新」。
-    """
+    """实时新增一条知识：写入 MySQL + 同步向量库，无需重启即可被检索。"""
     question = (question or "").strip()
     answer = (answer or "").strip()
     if not question or not answer:
         raise ValueError("问题和答案都不能为空")
 
-    collection = get_collection()
-    faq_id = f"q{uuid.uuid4().hex}"
-    collection.add(ids=[faq_id], documents=[question], metadatas=[{"answer": answer}])
+    faq_id = db.insert_faq_entry(question, answer)
+    sync_faq_to_chroma()
+    logger.info("实时新增知识成功：#%d %s", faq_id, question)
+    return {"id": faq_id, "question": question, "answer": answer, "enabled": 1}
 
-    # 追加到 faq.md，保证下次重新 seed 也不会丢
-    entry = f"\n## Q: {question}\nA: {answer}\n"
-    with open(config.Config.FAQ_PATH, "a", encoding="utf-8") as f:
-        f.write(entry)
 
-    logger.info("实时新增 FAQ 成功：%s", question)
-    return {"id": faq_id, "question": question, "answer": answer}
+def update_entry(faq_id: int, question: str | None = None,
+                 answer: str | None = None) -> dict:
+    """编辑一条知识库条目（问题/答案可部分更新），并同步向量库。"""
+    entry = db.update_faq_entry(faq_id, question=question, answer=answer)
+    if entry is None:
+        raise ValueError(f"知识条目 #{faq_id} 不存在")
+    sync_faq_to_chroma()
+    logger.info("知识条目 #%d 已更新", faq_id)
+    return entry
+
+
+def disable_entry(faq_id: int) -> dict:
+    """软删除一条知识库条目（enabled 置 0，从向量库移除，但保留数据可恢复）。"""
+    entry = db.set_faq_enabled(faq_id, False)
+    if entry is None:
+        raise ValueError(f"知识条目 #{faq_id} 不存在")
+    sync_faq_to_chroma()
+    logger.info("知识条目 #%d 已软删除", faq_id)
+    return entry
+
+
+def enable_entry(faq_id: int) -> dict:
+    """重新启用一条被软删除的知识库条目。"""
+    entry = db.set_faq_enabled(faq_id, True)
+    if entry is None:
+        raise ValueError(f"知识条目 #{faq_id} 不存在")
+    sync_faq_to_chroma()
+    logger.info("知识条目 #%d 已重新启用", faq_id)
+    return entry
+
+
+# ---------------------------------------------------------------------------
+# 向量召回 Top5 + LLM 重排 Top3
+# ---------------------------------------------------------------------------
+
+_RERANK_SYSTEM = """你是知识库检索排序专家。给定用户问题和若干候选问答，按与用户问题的相关性从高到低排序，输出最相关的 {top_n} 条候选的编号。
+
+【硬性约束】
+1. 只能从下面列出的候选中选择，禁止编造不存在的编号或内容。
+2. 编号是候选前面的数字（从 1 开始）。
+3. 严格输出 JSON：{{"ranked": [编号, ...]}}，编号按相关性从高到低排列；若没有相关的，输出空数组 []。
+"""
+
+
+def rerank(query: str, chunks: list[dict], top_n: int = 3) -> list[dict]:
+    """用 LLM 对向量召回的结果重排，返回最相关的 top_n 条（防幻觉：只从候选中选）。
+
+    向量召回按语义距离，但「距离近」不等于「能回答」；这里让大模型再判一次
+    相关性并排序，提升精排质量。LLM 失败时降级为按距离排序。
+    """
+    if not chunks:
+        return []
+    if len(chunks) <= top_n:
+        return chunks
+
+    lines = [f"{i + 1}. 问：{c['question']} 答：{c['answer']}" for i, c in enumerate(chunks)]
+    user = "【用户问题】" + query + "\n\n【候选问答】\n" + "\n".join(lines)
+
+    try:
+        result = llm.complete(
+            system=_RERANK_SYSTEM.format(top_n=top_n),
+            user=user,
+            json_mode=True,
+            max_tokens=100,
+        )
+        ranked = result.get("ranked", []) if isinstance(result, dict) else []
+        picked = []
+        for idx in ranked:
+            if isinstance(idx, int) and 1 <= idx <= len(chunks):
+                picked.append(chunks[idx - 1])
+            if len(picked) >= top_n:
+                break
+        if picked:
+            return picked
+    except Exception as e:  # noqa: BLE001
+        logger.warning("LLM 重排失败，降级为按距离排序：%s", e)
+
+    # 降级：按语义距离从小到大（越相关越靠前）取前 top_n
+    return sorted(chunks, key=lambda c: c.get("distance") or 999.0)[:top_n]
 
 
 # ---------------------------------------------------------------------------
 # 文档切块 + 向量化（RAG 的另一种数据源：产品手册 / 政策文档）
 # ---------------------------------------------------------------------------
 
-def chunk_text(text: str, chunk_size: int = 200, overlap: int = 40) -> list[str]:
+def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
     """把一篇长文档切成带重叠的文本块（chunk）。
 
     切块策略：

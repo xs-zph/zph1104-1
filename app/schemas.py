@@ -29,6 +29,13 @@ class FAQCreate(BaseModel):
     answer: str
 
 
+class FAQUpdate(BaseModel):
+    """编辑一条知识库 FAQ 时传入的内容（仅提交需要修改的字段）。"""
+
+    question: Optional[str] = None
+    answer: Optional[str] = None
+
+
 class ResolveRequest(BaseModel):
     """人工客服处理升级工单时提交的内容。"""
 

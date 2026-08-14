@@ -63,8 +63,8 @@ class Config:
     # 公众号后台「服务器配置」里的 Token，需与此处一致（用于签名校验）
     WECHAT_TOKEN = os.getenv("WECHAT_TOKEN", "ai_ticket_wechat_token")
 
-    # RAG 检索返回的最相关文档条数
-    RAG_TOP_K = 3
+    # RAG 向量召回的候选条数（召回 Top5 → LLM 重排 Top3）
+    RAG_TOP_K = 5
 
     @classmethod
     def ensure_dirs(cls):

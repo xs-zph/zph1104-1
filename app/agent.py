@@ -135,11 +135,13 @@ TOOLS = [
 def _search_faq(question: str) -> str:
     """工具：检索知识库（RAG），返回相关条目供大模型判断。
 
+    召回 Top5（向量）→ LLM 重排 Top3（相关性）→ 距离过滤兜底。
     用比 RAG 优先更宽松的阈值（RAG_AGENT_MAX_DISTANCE）过滤掉「毫不相关」的
     条目，但保留弱相关条目——因为这里由大模型再判断一次相关性，多给候选
     比漏掉好，避免「空气炸锅怎么用」这类近似问法被误判为「查不到」。
     """
-    chunks = rag.retrieve(question, top_k=3)
+    chunks = rag.retrieve(question, top_k=config.Config.RAG_TOP_K)
+    chunks = rag.rerank(question, chunks, top_n=3)
     relevant = [
         c for c in chunks
         if c.get("distance") is not None and c["distance"] <= config.Config.RAG_AGENT_MAX_DISTANCE
