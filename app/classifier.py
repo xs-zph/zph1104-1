@@ -13,14 +13,14 @@ from prompts import classify as classify_prompt
 logger = logging.getLogger("app.classifier")
 
 
-def classify(ticket_text: str) -> dict:
-    """对一条工单文本进行分类。
+def classify(ticket_text: str, history: list | None = None) -> dict:
+    """对一条工单文本进行分类（可带对话历史，便于理解简短承接语）。
 
     返回：{"category": str, "confidence": float, "reason": str}
     """
     result = llm.complete(
         system=classify_prompt.SYSTEM_PROMPT,
-        user=classify_prompt.build_user_prompt(ticket_text),
+        user=classify_prompt.build_user_prompt(ticket_text, history),
         json_mode=True,
         max_tokens=512,
     )

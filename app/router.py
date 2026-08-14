@@ -35,6 +35,25 @@ def is_smalltalk(text: str) -> bool:
     return any(k in t for k in _SMALLTALK_KEYWORDS)
 
 
+def _is_followup(text: str, username: str | None) -> bool:
+    """判断是否为「对上一轮客服追问的简短承接/回答」。
+
+    场景：客服上一轮问「需要我帮您查具体哪笔订单吗？」，客户回「需要」。
+    这种短消息孤立分类必然失败，应直接交给带历史上下文的 Agent 处理。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 10:
+        return False
+    history = memory.get_history(username)
+    if len(history) < 2:
+        return False
+    last = history[-1]
+    if last.get("role") != "assistant":
+        return False
+    content = last.get("content", "")
+    return "?" in content or "？" in content or "吗" in content
+
+
 def process_ticket(ticket_text: str, ground_truth: str | None = None,
                    username: str | None = None) -> dict:
     """处理一张工单，返回完整的处理结果字典（含耗时、分类、回复等）。
@@ -125,13 +144,33 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
         memory.append(username, "assistant", rag_hit["answer"])
         return record
 
-    # 4. 分类
-    result = classifier.classify(safe_text)
+    # 4. 上下文承接：短消息且上一轮客服在追问 → 直接交给 Agent（带历史理解上下文），跳过孤立分类
+    if _is_followup(safe_text, username):
+        reply = agent.run_agent(safe_text, username)
+        record = {
+            "ticket_text": safe_text,
+            "username": username,
+            "category": "多轮追问",
+            "ground_truth": ground_truth,
+            "confidence": 1.0,
+            "reason": "短承接语，结合对话历史交给 Agent 理解，跳过孤立分类",
+            "status": "auto",
+            "reply": reply,
+            "reply_source": "agent",
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+        }
+        ticket_logger.info("多轮追问（Agent）：%s", safe_text)
+        memory.append(username, "user", safe_text)
+        memory.append(username, "assistant", reply)
+        return record
+
+    # 5. 分类（带对话历史，便于理解简短承接语）
+    result = classifier.classify(safe_text, history)
     category = result["category"]
     confidence = result["confidence"]
     reason = result["reason"]
 
-    # 5. 路由判断：决定「自动处理」还是「人工升级」
+    # 6. 路由判断：决定「自动处理」还是「人工升级」
     if confidence < config.Config.CONFIDENCE_THRESHOLD:
         status, reply_source = "escalated", "escalate"
         reply = "抱歉，这个问题我暂时无法准确判断，已经帮您转接人工客服，请稍候。"

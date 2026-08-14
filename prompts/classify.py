@@ -18,6 +18,7 @@ SYSTEM_PROMPT = """【身份】企业售后工单分类专家
    ② 情绪激烈、明确要求投诉、仲裁或人工客服
 3. 普通咨询一律尽量归到可自动处理的类别（物流查询、商品咨询、发票问题、退货申请、售后维修），即使描述不够详细，也不要轻易转人工。
 4. 「退款纠纷」只用于商家拒绝退款、退款扯皮等真实纠纷；单纯的「退款到账时间、退款进度」这类查询，归「商品咨询」自动回答。
+5. 若待分类内容本身过于简短（如「需要」「好的」「是的」「可以」「那第二单呢」），请结合「对话历史」判断客户在承接/回应哪个话题，归到对应类别（如承接查订单→物流查询、承接退货→退货申请），不要因内容简短就转人工或给低置信。
 
 【参考样例，严格对齐判断逻辑】
 样例1
@@ -59,6 +60,16 @@ SYSTEM_PROMPT = """【身份】企业售后工单分类专家
 """
 
 
-def build_user_prompt(ticket_text: str) -> str:
-    """拼出「工单分类」的用户提示词。"""
-    return f"【待分类工单内容】\n{ticket_text}\n\n请输出分类结果。"
+def build_user_prompt(ticket_text: str, history: list | None = None) -> str:
+    """拼出「工单分类」的用户提示词；可带对话历史，帮助理解「需要/好的」这类简短承接语。"""
+    lines = []
+    if history:
+        lines.append("【对话历史（用于理解简短承接语的上下文）】")
+        for h in history[-6:]:
+            role = "客户" if h["role"] == "user" else "客服"
+            lines.append(f"{role}：{h['content']}")
+        lines.append("")
+    lines.append(f"【待分类工单内容】{ticket_text}")
+    lines.append("")
+    lines.append("请输出分类结果。")
+    return "\n".join(lines)
