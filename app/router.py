@@ -30,11 +30,22 @@ _SMALLTALK_KEYWORDS = (
 
 
 def is_smalltalk(text: str) -> bool:
-    """判断是否为闲聊/寒暄（问候、自我介绍、道谢、告别）。"""
+    """判断是否为「纯闲聊」——只有问候/寒暄/道谢，不含实质诉求。
+
+    「你好，我买的耳机坏了」这类「问候 + 真实问题」不算闲聊，
+    要交给后面的流程（售后/查询）处理，不能被一个「你好」带偏。
+    """
     t = text.strip().lower()
     if not t:
         return True
-    return any(k in t for k in _SMALLTALK_KEYWORDS)
+    if not any(k in t for k in _SMALLTALK_KEYWORDS):
+        return False
+    # 命中了闲聊词，但去掉问候/客套后仍有实质内容 → 不是纯闲聊
+    core = t
+    for k in _SMALLTALK_KEYWORDS:
+        core = core.replace(k, "")
+    core = "".join(ch for ch in core if ch not in "，。,. !?！？~～、 ")
+    return len(core) < 4
 
 
 def _is_followup(text: str, username: str | None) -> bool:

@@ -50,6 +50,11 @@ class Config:
     # 距离越小越相似（0=完全相同，2=完全相反）。实测：0.4 强相关 / 0.6 相关 / 0.8 弱相关(易答非所问) / 1.1+ 无关。
     RAG_MAX_DISTANCE = float(os.getenv("RAG_MAX_DISTANCE", "0.6"))
 
+    # Agent 的 search_faq 工具检索阈值：比 RAG 优先更宽松。
+    # 因为 RAG 优先是「原样返回答案」必须高置信；而 Agent 拿到候选后由大模型自行判断
+    # 相关性，可以多给一点弱相关条目，避免「空气炸锅怎么用」这类近似问法被误判为「查不到」。
+    RAG_AGENT_MAX_DISTANCE = float(os.getenv("RAG_AGENT_MAX_DISTANCE", "0.8"))
+
     # 天气查询的默认城市（客户没指定城市时使用）
     DEFAULT_CITY = os.getenv("DEFAULT_CITY", "邵阳")
 

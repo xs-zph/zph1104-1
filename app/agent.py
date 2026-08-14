@@ -98,6 +98,21 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "apply_after_sale",
+            "description": "客户确认要申请售后维修时，登记一条售后维修工单（记录订单号+故障问题），返回工单号供客户跟进。必须先和客户确认订单号和故障现象后再调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "string", "description": "要申请售后的订单号，如 A20240812001"},
+                    "issue": {"type": "string", "description": "故障/问题描述，如 无法开机、有杂音"},
+                },
+                "required": ["order_id", "issue"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_time",
             "description": "查询当前日期和时间（客户问「现在几点了 / 今天几号 / 星期几」时调用）",
             "parameters": {"type": "object", "properties": {}},
@@ -118,15 +133,16 @@ TOOLS = [
 
 
 def _search_faq(question: str) -> str:
-    """工具：检索知识库（RAG），只返回真正相关的条目。
+    """工具：检索知识库（RAG），返回相关条目供大模型判断。
 
-    关键：按 L2 距离过滤掉不相关条目。若不过滤，top_k=3 会强行返回
-    「距离最近但毫不相关」的 3 条，污染模型上下文，导致答非所问。
+    用比 RAG 优先更宽松的阈值（RAG_AGENT_MAX_DISTANCE）过滤掉「毫不相关」的
+    条目，但保留弱相关条目——因为这里由大模型再判断一次相关性，多给候选
+    比漏掉好，避免「空气炸锅怎么用」这类近似问法被误判为「查不到」。
     """
     chunks = rag.retrieve(question, top_k=3)
     relevant = [
         c for c in chunks
-        if c.get("distance") is not None and c["distance"] <= config.Config.RAG_MAX_DISTANCE
+        if c.get("distance") is not None and c["distance"] <= config.Config.RAG_AGENT_MAX_DISTANCE
     ]
     if not relevant:
         return "知识库暂无相关内容"
@@ -134,15 +150,28 @@ def _search_faq(question: str) -> str:
 
 
 def _list_my_orders(username: str | None) -> str:
-    """工具：列出当前登录用户名下的所有订单。"""
+    """工具：列出当前登录用户名下的所有订单，并带上物流/退款状态。
+
+    一次把订单的关键信息给全，让大模型无需再逐个调 query_order / query_logistics，
+    少绕几圈、回答更快更准。
+    """
     if not username:
         return "当前会话未登录，无法查询订单列表"
     orders = db.list_orders_for_user(username)
     if not orders:
         return f"您（{username}）名下暂无订单"
-    return "；".join(
-        f"{o['order_id']}（{o['product']}，状态：{o['status']}）" for o in orders
-    )
+    parts = []
+    for o in orders:
+        p = f"{o['order_id']}（{o['product']}，状态：{o['status']}"
+        if o.get("tracking_no"):
+            p += f"，运单号：{o['tracking_no']}"
+        if o.get("logistics"):
+            p += f"，物流：{o['logistics']}"
+        if o.get("refund_status"):
+            p += f"，退款：{o['refund_status']}"
+        p += "）"
+        parts.append(p)
+    return "；".join(parts)
 
 
 def _query_order(order_id: str, username: str | None) -> str:
@@ -209,6 +238,25 @@ def _check_my_tickets(username: str | None) -> str:
     )
 
 
+def _apply_after_sale(order_id: str, issue: str, username: str | None) -> str:
+    """工具：登记售后维修工单（记录订单号 + 故障问题），供人工客服跟进。"""
+    if not username:
+        return "当前会话未登录，无法登记售后申请"
+    order = db.get_order_for_user(username, order_id.strip())
+    if not order:
+        return f"未查询到您（{username}）名下的订单 {order_id}，请核对订单号"
+    ticket_id = db.insert_ticket(
+        ticket_text=f"[售后维修申请] 订单 {order_id}（{order['product']}）问题：{issue}",
+        category="售后维修",
+        status="escalated",
+        username=username,
+    )
+    return (
+        f"已登记售后维修工单 #{ticket_id}（订单 {order_id}，商品 {order['product']}，问题：{issue}）。"
+        "客服会在 24 小时内响应，请您保留好故障照片/视频凭证。"
+    )
+
+
 def _get_time() -> str:
     """工具：查询当前时间。"""
     return daily.get_time()
@@ -235,6 +283,8 @@ def _execute_tool(name: str, args: dict, username: str | None) -> str:
         return _cancel_order(args.get("order_id", ""), username)
     if name == "check_my_tickets":
         return _check_my_tickets(username)
+    if name == "apply_after_sale":
+        return _apply_after_sale(args.get("order_id", ""), args.get("issue", ""), username)
     if name == "get_time":
         return _get_time()
     if name == "get_weather":

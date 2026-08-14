@@ -115,7 +115,7 @@ def complete(system: str, user: str, json_mode: bool = False, max_tokens: int = 
 
 
 def complete_with_tools(system: str, user: str, tools: list, execute,
-                        max_steps: int = 3, history: list | None = None) -> str:
+                        max_steps: int = 4, history: list | None = None) -> str:
     """Agent 循环：让模型根据用户问题自行决定调用哪些工具，最终生成回复。
 
     参数：
