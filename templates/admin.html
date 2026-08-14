@@ -57,6 +57,28 @@
 
     <div class="panel admin-panel">
       <div class="panel-head">
+        <h2 class="panel-title">数据统计</h2>
+        <button class="btn btn-ghost" id="refresh-stats-btn">刷新</button>
+      </div>
+      <p class="panel-desc">TOP 高频问题 + 客户情绪趋势 + 人工负反馈标注分布，用于发现知识库缺口与体验问题。</p>
+      <div class="stats-grid">
+        <div class="stat-block">
+          <div class="stat-block-title">🔥 TOP 高频问题</div>
+          <div id="top-questions" class="topq-list"><div class="empty">加载中…</div></div>
+        </div>
+        <div class="stat-block">
+          <div class="stat-block-title">😊 情绪趋势（近 7 天）</div>
+          <div id="emotion-trend" class="emotion-trend"><div class="empty">加载中…</div></div>
+        </div>
+        <div class="stat-block">
+          <div class="stat-block-title">🏷️ 负反馈标签分布</div>
+          <div id="feedback-tags" class="tag-dist"><div class="empty">加载中…</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel admin-panel">
+      <div class="panel-head">
         <h2 class="panel-title">订单管理（增删改查）</h2>
         <span class="panel-tip" id="order-count"></span>
       </div>
@@ -114,10 +136,16 @@
     <div class="panel admin-panel">
       <div class="panel-head">
         <h2 class="panel-title">知识库管理（实时更新）</h2>
-        <span class="panel-tip" id="faq-count"></span>
+        <div class="panel-head-right">
+          <label class="kb-check kb-check-inline">
+            <input type="checkbox" id="faq-show-disabled"> 显示已停用
+          </label>
+          <span class="panel-tip" id="faq-count"></span>
+        </div>
       </div>
-      <p class="panel-desc">新增 FAQ 会立刻写入向量库并生效，无需重启；语义检索覆盖 80% 常见问题。</p>
+      <p class="panel-desc">新增 / 编辑 / 软删除都会立刻写入向量库并生效，无需重启；语义检索覆盖 80% 常见问题。</p>
       <form id="faq-form" class="faq-form" autocomplete="off">
+        <input type="hidden" id="faq-edit-key" value="">
         <div class="field">
           <label for="faq-question">问题</label>
           <input type="text" id="faq-question" placeholder="例如：支持分期付款吗？" required>
@@ -126,7 +154,10 @@
           <label for="faq-answer">答案</label>
           <textarea id="faq-answer" rows="3" placeholder="例如：支持，订单满 500 元可分期，具体以结算页为准。" required></textarea>
         </div>
-        <button type="submit" class="btn btn-primary">新增知识</button>
+        <div class="faq-form-actions">
+          <button type="submit" class="btn btn-primary" id="faq-submit-btn">新增知识</button>
+          <button type="button" class="btn btn-ghost hidden" id="faq-cancel-btn">取消编辑</button>
+        </div>
       </form>
       <div id="faq-list" class="faq-list">
         <div class="empty">加载中…</div>

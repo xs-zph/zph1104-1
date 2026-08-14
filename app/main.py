@@ -14,14 +14,15 @@
   user  / 123456   —— 客户（聊天界面）
 """
 import threading
+from collections import Counter
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app import auth, config, db, memory, metrics, rag, router, wechat
+from app import auth, config, db, feedback, memory, metrics, rag, router, wechat
 from app.config import setup_logging
-from app.schemas import FAQCreate, FAQUpdate, FeedbackRequest, LoginOut, LoginRequest, OrderCreate, OrderUpdate, ResolveRequest, TicketCreate
+from app.schemas import FAQCreate, FAQUpdate, FeedbackRequest, FeedbackTagRequest, LoginOut, LoginRequest, OrderCreate, OrderUpdate, ResolveRequest, TicketCreate
 
 # 初始化日志 + 数据库 + 演示账号 + 演示订单
 setup_logging()
@@ -196,6 +197,32 @@ def resolve_escalation(ticket_id: int, payload: ResolveRequest, username: str = 
 def get_metrics(username: str = Depends(auth.require_user)):
     """系统核心指标（自动处理率、分类准确率、平均耗时等）。"""
     return metrics.overview()
+
+
+@app.get("/api/stats")
+def get_stats(username: str = Depends(auth.require_admin)):
+    """后台统计：TOP 问题 + 情绪趋势 + 负反馈标签分布。"""
+    tags = db.list_all_feedback_tags()
+    tag_dist = dict(Counter(t["tag"] for t in tags if t.get("tag")))
+    return {
+        "top_questions": metrics.top_questions(10),
+        "emotion_trend": metrics.emotion_trend(7),
+        "feedback_tags": tag_dist,
+    }
+
+
+@app.post("/api/tickets/{ticket_id}/tag")
+def tag_ticket(ticket_id: int, payload: FeedbackTagRequest, username: str = Depends(auth.require_admin)):
+    """人工坐席给错误工单打标签，系统返回一条优化建议（模块⑦）。"""
+    ticket = db.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    if payload.tag not in feedback.TAG_LABELS:
+        raise HTTPException(status_code=400, detail="标签只能是：" + "/".join(feedback.TAG_LABELS))
+    db.add_feedback_tag(ticket_id, payload.tag, payload.note or "", username)
+    db.insert_ticket_log(ticket_id, "feedback_tag", f"人工标注：{payload.tag}", username)
+    suggestion = feedback.suggest(payload.tag, ticket)
+    return {"status": "ok", "id": ticket_id, "tag": payload.tag, "suggestion": suggestion}
 
 
 # ---------------- 订单管理（仅管理员，增删改查） ----------------

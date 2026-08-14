@@ -6,6 +6,7 @@
   - 平均处理耗时 = 平均每张工单耗时
 """
 from collections import Counter, defaultdict
+from datetime import datetime, timedelta
 
 from app import db
 
@@ -73,3 +74,29 @@ def category_accuracy() -> dict:
             "accuracy": round(v["correct"] / v["total"], 4)}
         for k, v in stat.items()
     }
+
+
+def top_questions(n: int = 10) -> list[dict]:
+    """TOP 问题：出现次数最多的问题文本（发现高频咨询，指导补充知识库）。"""
+    counter = Counter(t["ticket_text"] for t in db.list_all_tickets() if t.get("ticket_text"))
+    return [{"question": q, "count": c} for q, c in counter.most_common(n)]
+
+
+def emotion_trend(days: int = 7) -> list[dict]:
+    """按天统计情绪分布（负面/中性/正面），用于观察客户情绪趋势。"""
+    per_day = defaultdict(lambda: {"负面": 0, "中性": 0, "正面": 0})
+    for t in db.list_all_tickets():
+        created = t.get("created_at")
+        if not created:
+            continue
+        day = str(created)[:10]  # YYYY-MM-DD
+        emo = t.get("emotion") or "中性"
+        if emo in per_day[day]:
+            per_day[day][emo] += 1
+
+    today = datetime.now().date()
+    result = []
+    for i in range(days - 1, -1, -1):
+        day = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        result.append({"date": day, **per_day.get(day, {"负面": 0, "中性": 0, "正面": 0})})
+    return result

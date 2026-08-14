@@ -32,6 +32,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     refreshEscalations();
     refreshFaq();
     loadOrders();
+    loadStats();
   } catch (err) {
     window.location.href = "/login";
   }
@@ -40,7 +41,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 document.getElementById("refresh-btn").addEventListener("click", () => {
   refreshMetrics();
   refreshEscalations();
+  loadStats();
 });
+
+document.getElementById("refresh-stats-btn").addEventListener("click", loadStats);
 
 // ---------- 加载指标 ----------
 async function refreshMetrics() {
@@ -57,6 +61,59 @@ async function refreshMetrics() {
       m.avg_latency_ms != null ? m.avg_latency_ms + " ms" : "—";
   } catch (err) {
     console.error("加载指标失败", err);
+  }
+}
+
+// ---------- 加载数据统计（TOP 问题 + 情绪趋势 + 负反馈标签） ----------
+async function loadStats() {
+  try {
+    const resp = await fetch("/api/stats", { headers: authHeaders() });
+    if (!resp.ok) throw new Error(await resp.text());
+    const s = await resp.json();
+
+    // TOP 高频问题
+    const top = document.getElementById("top-questions");
+    const topQ = s.top_questions || [];
+    top.innerHTML = topQ.length
+      ? topQ.map((q, i) => `
+          <div class="topq-item">
+            <span class="topq-rank">${i + 1}</span>
+            <span class="topq-text">${escapeHtml(q.question)}</span>
+            <span class="topq-count">${q.count} 次</span>
+          </div>`).join("")
+      : '<div class="empty">暂无工单</div>';
+
+    // 情绪趋势（近 7 天，堆叠条形）
+    const trend = document.getElementById("emotion-trend");
+    const days = s.emotion_trend || [];
+    if (!days.length) {
+      trend.innerHTML = '<div class="empty">暂无数据</div>';
+    } else {
+      trend.innerHTML = days.map((d) => `
+          <div class="emo-row">
+            <span class="emo-date">${escapeHtml((d.date || "").slice(5))}</span>
+            <div class="emo-bar">
+              <div class="emo-seg neg" style="flex:${d["负面"] || 0}" title="负面 ${d["负面"] || 0}"></div>
+              <div class="emo-seg neu" style="flex:${d["中性"] || 0}" title="中性 ${d["中性"] || 0}"></div>
+              <div class="emo-seg pos" style="flex:${d["正面"] || 0}" title="正面 ${d["正面"] || 0}"></div>
+            </div>
+            <span class="emo-total">${(d["负面"] || 0) + (d["中性"] || 0) + (d["正面"] || 0)}</span>
+          </div>`).join("") + `
+        <div class="emo-legend">
+          <span><i class="dot neg"></i>负面</span>
+          <span><i class="dot neu"></i>中性</span>
+          <span><i class="dot pos"></i>正面</span>
+        </div>`;
+    }
+
+    // 负反馈标签分布
+    const tags = document.getElementById("feedback-tags");
+    const entries = Object.entries(s.feedback_tags || {});
+    tags.innerHTML = entries.length
+      ? entries.map(([k, v]) => `<span class="tag-chip"><b>${escapeHtml(k)}</b> ${v} 条</span>`).join("")
+      : '<div class="empty">暂无标注</div>';
+  } catch (err) {
+    console.error("加载统计失败", err);
   }
 }
 
@@ -78,6 +135,10 @@ async function refreshEscalations() {
     // 绑定「标记已处理」按钮
     list.querySelectorAll("[data-resolve]").forEach((btn) => {
       btn.addEventListener("click", () => resolveTicket(btn.dataset.resolve));
+    });
+    // 绑定「负反馈打标」按钮（模块⑦：人工标注 AI 错误 → 给优化建议）
+    list.querySelectorAll("[data-tag]").forEach((btn) => {
+      btn.addEventListener("click", () => tagTicket(btn.dataset.tag, btn.dataset.label));
     });
   } catch (err) {
     list.innerHTML = '<div class="empty">加载失败：' + escapeHtml(err.message) + "</div>";
@@ -110,17 +171,49 @@ function renderCard(t) {
         ${statusTag}
         <span class="tag">${escapeHtml(t.category || "未知")}</span>
         <span class="tag" style="background:rgba(100,116,139,0.28)">置信度 ${Math.round((t.confidence || 0) * 100)}%</span>
+        ${t.emotion ? `<span class="tag" style="${emotionTagStyle(t.emotion)}">${escapeHtml(t.emotion)}</span>` : ""}
       </div>
       <div class="escalation-text">${escapeHtml(t.ticket_text)}</div>
       <div class="escalation-meta">
         <span>AI 回复：${escapeHtml(t.reply || "—")}</span>
       </div>
       ${body}
+      <div class="feedback-tag-row">
+        <span class="feedback-tag-label">标注 AI 错误：</span>
+        <button class="tag-btn" data-tag="${t.id}" data-label="分类错误">分类错误</button>
+        <button class="tag-btn" data-tag="${t.id}" data-label="知识库无答案">知识库无答案</button>
+        <button class="tag-btn" data-tag="${t.id}" data-label="AI回答有误">AI回答有误</button>
+        <button class="tag-btn" data-tag="${t.id}" data-label="安抚不合适">安抚不合适</button>
+      </div>
       <div class="escalation-meta">
         <span>#${t.id}</span>
         <span>${escapeHtml(t.created_at || "")}</span>
       </div>
     </div>`;
+}
+
+function emotionTagStyle(emotion) {
+  if (emotion === "负面") return "background:rgba(251,113,133,0.15);color:var(--red);border-color:rgba(251,113,133,0.4)";
+  if (emotion === "正面") return "background:rgba(52,211,153,0.15);color:var(--green);border-color:rgba(52,211,153,0.4)";
+  return "background:rgba(100,116,139,0.28)";
+}
+
+// ---------- 负反馈打标（模块⑦） ----------
+async function tagTicket(id, label) {
+  try {
+    const resp = await fetch("/api/tickets/" + id + "/tag", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ tag: label }),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    const data = await resp.json();
+    const s = data.suggestion || {};
+    alert("已标注「" + label + "」\n\n优化建议：" + (s.message || "无"));
+    loadStats();
+  } catch (err) {
+    alert("标注失败：" + err.message);
+  }
 }
 
 // ---------- 标记已处理 ----------
@@ -156,7 +249,8 @@ async function resolveTicket(id) {
 // ---------- 知识库管理（实时更新） ----------
 async function refreshFaq() {
   try {
-    const resp = await fetch("/api/faq", { headers: authHeaders() });
+    const showDisabled = document.getElementById("faq-show-disabled").checked;
+    const resp = await fetch("/api/faq?include_disabled=" + showDisabled, { headers: authHeaders() });
     if (!resp.ok) throw new Error(await resp.text());
     const entries = await resp.json();
     document.getElementById("faq-count").textContent = "共 " + entries.length + " 条";
@@ -166,12 +260,70 @@ async function refreshFaq() {
       return;
     }
     list.innerHTML = entries.map((e) => `
-      <div class="faq-item">
+      <div class="faq-item ${e.enabled === 0 ? "disabled" : ""}">
         <div class="faq-q">${escapeHtml(e.question)}</div>
         <div class="faq-a">${escapeHtml(e.answer)}</div>
+        <div class="faq-item-actions">
+          ${e.enabled === 0
+            ? `<button class="btn btn-ghost btn-sm" data-faq-restore="${e.id}">恢复</button>`
+            : `<button class="btn btn-ghost btn-sm" data-faq-edit="${e.id}">编辑</button>
+               <button class="btn btn-light btn-sm" data-faq-del="${e.id}">停用</button>`}
+        </div>
       </div>`).join("");
+
+    list.querySelectorAll("[data-faq-edit]").forEach((btn) => {
+      btn.addEventListener("click", () => editFaq(btn.dataset.faqEdit, entries));
+    });
+    list.querySelectorAll("[data-faq-del]").forEach((btn) => {
+      btn.addEventListener("click", () => disableFaq(btn.dataset.faqDel));
+    });
+    list.querySelectorAll("[data-faq-restore]").forEach((btn) => {
+      btn.addEventListener("click", () => restoreFaq(btn.dataset.faqRestore));
+    });
   } catch (err) {
     console.error("加载知识库失败", err);
+  }
+}
+
+function editFaq(id, entries) {
+  const e = entries.find((x) => String(x.id) === String(id));
+  if (!e) return;
+  document.getElementById("faq-edit-key").value = e.id;
+  document.getElementById("faq-question").value = e.question || "";
+  document.getElementById("faq-answer").value = e.answer || "";
+  document.getElementById("faq-submit-btn").textContent = "保存修改";
+  document.getElementById("faq-cancel-btn").classList.remove("hidden");
+  document.getElementById("faq-question").focus();
+}
+
+function resetFaqForm() {
+  document.getElementById("faq-edit-key").value = "";
+  document.getElementById("faq-question").value = "";
+  document.getElementById("faq-answer").value = "";
+  document.getElementById("faq-submit-btn").textContent = "新增知识";
+  document.getElementById("faq-cancel-btn").classList.add("hidden");
+}
+
+async function disableFaq(id) {
+  if (!confirm("确认停用这条知识？（软删除，可随时恢复）")) return;
+  try {
+    const resp = await fetch("/api/faq/" + id, { method: "DELETE", headers: authHeaders() });
+    if (!resp.ok) throw new Error(await resp.text());
+    refreshFaq();
+    loadStats();
+  } catch (err) {
+    alert("停用失败：" + err.message);
+  }
+}
+
+async function restoreFaq(id) {
+  try {
+    const resp = await fetch("/api/faq/" + id + "/restore", { method: "POST", headers: authHeaders() });
+    if (!resp.ok) throw new Error(await resp.text());
+    refreshFaq();
+    loadStats();
+  } catch (err) {
+    alert("恢复失败：" + err.message);
   }
 }
 
@@ -181,30 +333,39 @@ document.getElementById("faq-form").addEventListener("submit", async (e) => {
   const answer = document.getElementById("faq-answer").value.trim();
   if (!question || !answer) return;
 
-  const btn = e.target.querySelector("button[type=submit]");
+  const editKey = document.getElementById("faq-edit-key").value;
+  const btn = document.getElementById("faq-submit-btn");
   btn.disabled = true;
-  btn.textContent = "新增中…";
+  btn.textContent = editKey ? "保存中…" : "新增中…";
   try {
-    const resp = await fetch("/api/faq", {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({ question, answer }),
-    });
+    const resp = editKey
+      ? await fetch("/api/faq/" + editKey, {
+          method: "PUT",
+          headers: authHeaders(),
+          body: JSON.stringify({ question, answer }),
+        })
+      : await fetch("/api/faq", {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({ question, answer }),
+        });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
-      throw new Error(data.detail || "新增失败");
+      throw new Error(data.detail || "操作失败");
     }
-    document.getElementById("faq-question").value = "";
-    document.getElementById("faq-answer").value = "";
+    resetFaqForm();
     refreshFaq();
-    alert("✅ 知识已实时写入知识库，可立即被检索到");
+    alert(editKey ? "✅ 知识已更新，向量库已同步" : "✅ 知识已实时写入知识库，可立即被检索到");
   } catch (err) {
-    alert("新增失败：" + err.message);
+    alert("操作失败：" + err.message);
   } finally {
     btn.disabled = false;
     btn.textContent = "新增知识";
   }
 });
+
+document.getElementById("faq-cancel-btn").addEventListener("click", resetFaqForm);
+document.getElementById("faq-show-disabled").addEventListener("change", refreshFaq);
 
 // ---------- 订单管理（增删改查） ----------
 async function loadOrders() {

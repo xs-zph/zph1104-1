@@ -727,6 +727,95 @@ a { text-decoration: none; color: inherit; }
 .tag.cancelled { background: rgba(251, 113, 133, 0.15); color: var(--red); border-color: rgba(251, 113, 133, 0.4); }
 
 /* ============================================================
+   数据统计（TOP 问题 + 情绪趋势 + 负反馈标签）
+   ============================================================ */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.stat-block {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 16px;
+  min-height: 200px;
+}
+.stat-block-title { font-size: 14px; font-weight: 700; color: var(--text-0); margin-bottom: 14px; letter-spacing: 0.5px; }
+
+.topq-list { display: flex; flex-direction: column; gap: 7px; }
+.topq-item {
+  display: flex; align-items: center; gap: 9px;
+  font-size: 13px; padding: 6px 8px; border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.topq-rank {
+  flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800;
+  background: var(--glass-strong); color: var(--text-1);
+}
+.topq-item:nth-child(1) .topq-rank { background: linear-gradient(135deg, #f59e0b, #f97316); color: #1f1400; }
+.topq-item:nth-child(2) .topq-rank { background: linear-gradient(135deg, #94a3b8, #64748b); color: #fff; }
+.topq-item:nth-child(3) .topq-rank { background: linear-gradient(135deg, #b45309, #92400e); color: #fff; }
+.topq-text { flex: 1; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topq-count { flex-shrink: 0; font-size: 12px; color: var(--text-3); }
+
+.emotion-trend { display: flex; flex-direction: column; gap: 8px; }
+.emo-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.emo-date { flex-shrink: 0; width: 38px; color: var(--text-3); }
+.emo-bar {
+  flex: 1; display: flex; height: 14px; border-radius: 7px;
+  overflow: hidden; background: rgba(255, 255, 255, 0.04);
+}
+.emo-seg { height: 100%; min-width: 0; transition: width 0.3s ease; }
+.emo-seg.neg { background: var(--red); }
+.emo-seg.neu { background: #64748b; }
+.emo-seg.pos { background: var(--green); }
+.emo-total { flex-shrink: 0; width: 22px; text-align: right; color: var(--text-2); font-weight: 700; }
+.emo-legend {
+  display: flex; gap: 14px; margin-top: 4px; font-size: 12px; color: var(--text-2);
+}
+.emo-legend .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; }
+.emo-legend .dot.neg { background: var(--red); }
+.emo-legend .dot.neu { background: #64748b; }
+.emo-legend .dot.pos { background: var(--green); }
+
+.tag-dist { display: flex; flex-wrap: wrap; gap: 9px; }
+.tag-chip {
+  font-size: 12px; padding: 7px 13px; border-radius: 999px;
+  background: rgba(99, 102, 241, 0.16);
+  color: var(--text-1); border: 1px solid rgba(99, 102, 241, 0.35);
+}
+.tag-chip b { color: var(--text-0); }
+
+/* 负反馈打标（升级工单卡片） */
+.feedback-tag-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
+  margin: 4px 0 13px; padding-top: 11px; border-top: 1px dashed var(--line);
+}
+.feedback-tag-label { font-size: 12px; color: var(--text-3); margin-right: 2px; }
+.tag-btn {
+  font-size: 12px; font-family: inherit; cursor: pointer;
+  padding: 5px 11px; border-radius: 999px;
+  background: var(--glass); border: 1px solid var(--line);
+  color: var(--text-2); transition: all 0.18s ease;
+}
+.tag-btn:hover { background: var(--glass-strong); color: var(--text-0); border-color: var(--violet); transform: translateY(-1px); }
+
+/* 知识库条目操作按钮 + 编辑态 */
+.panel-head-right { display: flex; align-items: center; gap: 14px; }
+.kb-check-inline { margin-bottom: 0; }
+.faq-form-actions { display: flex; gap: 10px; }
+.faq-item-actions { margin-top: 9px; display: flex; gap: 8px; justify-content: flex-end; }
+.faq-item.disabled { opacity: 0.55; }
+.faq-item.disabled .faq-q { text-decoration: line-through; }
+
+@media (max-width: 800px) {
+  .stats-grid { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
    动画
    ============================================================ */
 @keyframes auroraShift {

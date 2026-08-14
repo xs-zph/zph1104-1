@@ -49,6 +49,13 @@ class FeedbackRequest(BaseModel):
     feedback: str  # up（满意）/ down（不满意）
 
 
+class FeedbackTagRequest(BaseModel):
+    """人工坐席给错误工单打标签时传入的内容。"""
+
+    tag: str                      # 分类错误 / 知识库无答案 / AI回答有误 / 安抚不合适
+    note: Optional[str] = None    # 人工补充说明
+
+
 class OrderCreate(BaseModel):
     """管理员新增订单时传入的内容。"""
 
