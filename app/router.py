@@ -1,13 +1,15 @@
 """路由模块：系统的「大脑」，决定每张工单走哪条处理路径。
 
-处理流程（核心业务逻辑）：
-  1. 先调用分类器，得到 类别 + 置信度；
-  2. 判断是否升级人工：
-     - 置信度 < 阈值（拿不准） → 升级人工
-     - 类别是「投诉」或「其他」    → 升级人工
-  3. 否则自动处理：
-     - 类别是「FAQ咨询」 → RAG 知识库回复
-     - 其他可自动类别     → 模板回复
+处理流程（按优先级从高到低）：
+  0. 日常问答（时间/天气）         → Agent 调实时工具
+  1. 响应缓存命中                  → 直接返回
+  2. 闲聊（问候/寒暄）             → 聊天回复
+  3. 明确投诉/纠纷/赔偿/转人工     → 直接升级人工（先安抚）
+  4. RAG 知识库命中                → 直接返回知识库答案（毫秒级）
+  5. 多轮追问承接                  → 交 Agent（带历史）
+  6. 自助查询（订单/工单/物流/退款）→ 交 Agent 调工具
+  7. 分类 → 低置信或投诉/纠纷类 → 升级人工；可自动类 → Agent
+  8. 兜底 → 转人工
 """
 import logging
 import time
@@ -52,6 +54,40 @@ def _is_followup(text: str, username: str | None) -> bool:
         return False
     content = last.get("content", "")
     return "?" in content or "？" in content or "吗" in content
+
+
+# 查「我自己的数据」的意图关键词（订单/工单/物流/退款进度）。
+# 命中则直接交给 Agent 用工具查询，绝不能因分类器「拿不准」而升级人工。
+_DATA_QUERY_KEYWORDS = (
+    # 查我的订单
+    "我的订单", "我的所有订单", "订单列表", "我买了什么", "查订单", "查一下订单", "查下订单", "看下订单",
+    # 查我的工单
+    "我的工单", "查工单", "工单进度", "我提交的工单", "处理得怎么样",
+    # 查我的物流 / 快递
+    "我的快递", "查物流", "查快递", "物流到哪", "快递到哪", "到哪了", "什么时候到", "运单",
+    # 查我的退款进度
+    "退款进度", "退款到账", "退款状态", "退款到哪", "钱什么时候到",
+)
+
+# 含投诉/纠纷/找人工等负面诉求时，不按自助查询处理，仍走分类器正常判定转人工
+_COMPLAINT_KEYWORDS = ("投诉", "赔偿", "纠纷", "扯皮", "找人工", "转人工", "人工客服", "人工处理")
+
+
+def _is_data_query(text: str) -> bool:
+    """判断是否为「查询我自己的订单/工单/物流/退款」这类自助查询意图。"""
+    t = text or ""
+    if any(k in t for k in _COMPLAINT_KEYWORDS):
+        return False
+    return any(k in t for k in _DATA_QUERY_KEYWORDS)
+
+
+# 明确要求投诉 / 赔偿 / 纠纷 / 转人工的信号：直接升级人工，绝不查 RAG、不自动作答
+_ESCALATE_INTENT_KEYWORDS = ("投诉", "赔偿", "纠纷", "扯皮", "转人工", "找人工")
+
+
+def _is_escalate_intent(text: str) -> bool:
+    """判断是否为「明确要求升级人工」的意图（投诉/纠纷/赔偿/转人工）。"""
+    return any(k in (text or "") for k in _ESCALATE_INTENT_KEYWORDS)
 
 
 def process_ticket(ticket_text: str, ground_truth: str | None = None,
@@ -124,7 +160,26 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
         cache.set(cache_key, record)  # 闲聊回复确定性较强，缓存加速
         return record
 
-    # 3. RAG 优先：知识库命中就直接返回答案，不调大模型（毫秒级，性能关键）
+    # 3. 升级人工意图：明确投诉/纠纷/赔偿/转人工，直接升级（先安抚），绝不查 RAG 或自动作答
+    if _is_escalate_intent(safe_text):
+        record = {
+            "ticket_text": safe_text,
+            "username": username,
+            "category": "人工处理工单",
+            "ground_truth": ground_truth,
+            "confidence": 1.0,
+            "reason": "明确投诉/纠纷/赔偿/转人工意图，直接升级人工（先安抚）",
+            "status": "escalated",
+            "reply": "非常抱歉给您带来不好的体验，我完全理解您的心情。您的问题我已经帮您转接人工客服，请稍候，专员会尽快为您核实处理。",
+            "reply_source": "escalate",
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+        }
+        ticket_logger.info("升级人工（投诉/纠纷意图）：%s", safe_text)
+        memory.append(username, "user", safe_text)
+        memory.append(username, "assistant", record["reply"])
+        return record
+
+    # 4. RAG 优先：知识库命中就直接返回答案，不调大模型（毫秒级，性能关键）
     rag_hit = rag.best_answer(safe_text)
     if rag_hit is not None:
         record = {
@@ -144,7 +199,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
         memory.append(username, "assistant", rag_hit["answer"])
         return record
 
-    # 4. 上下文承接：短消息且上一轮客服在追问 → 直接交给 Agent（带历史理解上下文），跳过孤立分类
+    # 5. 上下文承接：短消息且上一轮客服在追问 → 直接交给 Agent（带历史理解上下文），跳过孤立分类
     if _is_followup(safe_text, username):
         reply = agent.run_agent(safe_text, username)
         record = {
@@ -164,13 +219,34 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
         memory.append(username, "assistant", reply)
         return record
 
-    # 5. 分类（带对话历史，便于理解简短承接语）
+    # 6. 自助查询：查「我的订单/工单/物流/退款进度」直接交 Agent 调工具，
+    #    跳过分类器——这类个人数据查询不是投诉/纠纷，不该因「拿不准」升级人工。
+    if _is_data_query(safe_text):
+        reply = agent.run_agent(safe_text, username)
+        record = {
+            "ticket_text": safe_text,
+            "username": username,
+            "category": "自助查询",
+            "ground_truth": ground_truth,
+            "confidence": 1.0,
+            "reason": "个人数据查询（订单/工单/物流/退款），直接交 Agent 调工具查询",
+            "status": "auto",
+            "reply": reply,
+            "reply_source": "agent",
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+        }
+        ticket_logger.info("自助查询（Agent）：%s", safe_text)
+        memory.append(username, "user", safe_text)
+        memory.append(username, "assistant", reply)
+        return record
+
+    # 7. 分类（带对话历史，便于理解简短承接语）
     result = classifier.classify(safe_text, history)
     category = result["category"]
     confidence = result["confidence"]
     reason = result["reason"]
 
-    # 6. 路由判断：决定「自动处理」还是「人工升级」
+    # 8. 路由判断：决定「自动处理」还是「人工升级」
     if confidence < config.Config.CONFIDENCE_THRESHOLD:
         status, reply_source = "escalated", "escalate"
         reply = "非常抱歉，我一时没能准确理解您的意思，让您久等了。为了不耽误您，已经帮您转接人工客服，请稍候，专员会尽快为您处理。"
