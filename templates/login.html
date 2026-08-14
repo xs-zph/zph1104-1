@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - AI客服工单自动化系统</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body">
+    <div class="login-card tilt">
+        <div class="login-logo">
+            <div class="login-logo-icon">AI</div>
+            <h1>AI客服工单自动化系统</h1>
+            <p class="login-sub">智能分类 · 条件路由 · 自动回复 · 人工升级</p>
+        </div>
+
+        <form id="login-form" class="login-form" autocomplete="off">
+            <div class="field">
+                <label for="username">用户名</label>
+                <input type="text" id="username" placeholder="请输入用户名" required>
+            </div>
+            <div class="field">
+                <label for="password">密码</label>
+                <input type="password" id="password" placeholder="请输入密码" required>
+            </div>
+            <div class="login-error" id="login-error" hidden></div>
+            <button type="submit" class="btn btn-primary btn-block" id="login-btn">登 录</button>
+        </form>
+
+        <div class="login-demo">
+            <span>演示账号</span>
+            <div class="login-demo-row">
+                <code>admin / 123456</code><em>客服后台</em>
+            </div>
+            <div class="login-demo-row">
+                <code>user / 123456</code><em>客户聊天</em>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/login.js"></script>
+    <script src="/static/effects.js"></script>
+</body>
+</html>

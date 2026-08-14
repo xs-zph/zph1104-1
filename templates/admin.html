@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>客服后台 - AI工单系统</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="admin-body">
+  <!-- 顶部导航 -->
+  <header class="navbar">
+    <div class="navbar-inner">
+      <div class="brand">
+        <span class="brand-icon">🛠️</span>
+        <span class="brand-name">AI 客服工单 · 后台管理</span>
+      </div>
+      <div class="navbar-right">
+        <span class="navbar-user" id="admin-username">—</span>
+        <button class="btn btn-light" id="logout-btn">退出登录</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 指标看板 -->
+  <section class="metrics">
+    <div class="metric-card tilt">
+      <div class="metric-label">工单总数</div>
+      <div class="metric-value" id="m-total">—</div>
+    </div>
+    <div class="metric-card tilt">
+      <div class="metric-label">自动处理率</div>
+      <div class="metric-value" id="m-auto-rate">—</div>
+    </div>
+    <div class="metric-card tilt">
+      <div class="metric-label">分类准确率</div>
+      <div class="metric-value" id="m-accuracy">—</div>
+    </div>
+    <div class="metric-card tilt">
+      <div class="metric-label">平均耗时</div>
+      <div class="metric-value" id="m-latency">—</div>
+    </div>
+  </section>
+
+  <!-- 升级工单列表 -->
+  <main class="container admin-container">
+    <div class="panel admin-panel">
+      <div class="panel-head">
+        <h2 class="panel-title">待人工处理工单</h2>
+        <button class="btn btn-ghost" id="refresh-btn">刷新</button>
+      </div>
+      <p class="panel-desc">AI 无法自动处理的工单会升级到这里，由人工客服跟进处理。</p>
+
+      <div id="escalation-list" class="escalation-list">
+        <div class="empty">加载中…</div>
+      </div>
+    </div>
+
+    <div class="panel admin-panel">
+      <div class="panel-head">
+        <h2 class="panel-title">订单管理（增删改查）</h2>
+        <span class="panel-tip" id="order-count"></span>
+      </div>
+      <p class="panel-desc">管理演示订单：AI 客服的订单 / 物流 / 退款查询，以及「取消订单」自助服务都基于这里的数据。</p>
+
+      <form id="order-form" class="order-form" autocomplete="off">
+        <input type="hidden" id="order-edit-key" value="">
+        <div class="order-form-grid">
+          <div class="field">
+            <label for="order-id">订单号 *</label>
+            <input type="text" id="order-id" placeholder="如 A20240812001" required>
+          </div>
+          <div class="field">
+            <label for="order-user">归属用户</label>
+            <input type="text" id="order-user" placeholder="user" value="user">
+          </div>
+          <div class="field">
+            <label for="order-product">商品</label>
+            <input type="text" id="order-product" placeholder="如 无线蓝牙耳机">
+          </div>
+          <div class="field">
+            <label for="order-status">状态</label>
+            <select id="order-status">
+              <option>待发货</option>
+              <option>已发货</option>
+              <option>已完成</option>
+              <option>已退货</option>
+              <option>已取消</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="order-tracking">运单号</label>
+            <input type="text" id="order-tracking" placeholder="如 SF1234567890">
+          </div>
+          <div class="field">
+            <label for="order-logistics">物流信息</label>
+            <input type="text" id="order-logistics" placeholder="如 已到达长沙分拨中心">
+          </div>
+          <div class="field">
+            <label for="order-refund">退款状态</label>
+            <input type="text" id="order-refund" placeholder="如 退款处理中">
+          </div>
+        </div>
+        <div class="order-form-actions">
+          <button type="submit" class="btn btn-primary" id="order-submit-btn">新增订单</button>
+          <button type="button" class="btn btn-ghost" id="order-reset-btn">清空表单</button>
+        </div>
+      </form>
+
+      <div id="order-list" class="order-list">
+        <div class="empty">加载中…</div>
+      </div>
+    </div>
+
+    <div class="panel admin-panel">
+      <div class="panel-head">
+        <h2 class="panel-title">知识库管理（实时更新）</h2>
+        <span class="panel-tip" id="faq-count"></span>
+      </div>
+      <p class="panel-desc">新增 FAQ 会立刻写入向量库并生效，无需重启；语义检索覆盖 80% 常见问题。</p>
+      <form id="faq-form" class="faq-form" autocomplete="off">
+        <div class="field">
+          <label for="faq-question">问题</label>
+          <input type="text" id="faq-question" placeholder="例如：支持分期付款吗？" required>
+        </div>
+        <div class="field">
+          <label for="faq-answer">答案</label>
+          <textarea id="faq-answer" rows="3" placeholder="例如：支持，订单满 500 元可分期，具体以结算页为准。" required></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary">新增知识</button>
+      </form>
+      <div id="faq-list" class="faq-list">
+        <div class="empty">加载中…</div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/static/admin.js"></script>
+  <script src="/static/effects.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# 密钥与本地配置（不要把 API Key 提交到 Git）
+.env
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 运行时生成的数据（数据库、向量库、日志）
+data/tickets.db
+data/chroma/
+logs/
