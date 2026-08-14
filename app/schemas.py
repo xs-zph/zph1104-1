@@ -11,6 +11,8 @@ class TicketCreate(BaseModel):
     """创建工单 / 聊天消息时传入的内容。"""
 
     ticket_text: str  # 工单原文 / 聊天内容
+    phone: Optional[str] = None    # 客户联系电话（若有）
+    device: Optional[str] = None   # 渠道/设备信息（web / wechat）
 
 
 class LoginRequest(BaseModel):

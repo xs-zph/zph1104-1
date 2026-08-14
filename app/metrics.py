@@ -33,6 +33,11 @@ def overview() -> dict:
     # 各类别数量
     category_dist = dict(Counter(t["category"] for t in tickets if t["category"]))
 
+    # 情绪分布（负面 / 中性 / 正面）
+    emotion_dist = dict(Counter(t["emotion"] for t in tickets if t.get("emotion")))
+    negative_count = emotion_dist.get("负面", 0)
+    negative_ratio = round(negative_count / total, 4) if total else 0.0
+
     # 满意度（👍/👎）
     feedback_up = sum(1 for t in tickets if t.get("feedback") == "up")
     feedback_down = sum(1 for t in tickets if t.get("feedback") == "down")
@@ -45,6 +50,8 @@ def overview() -> dict:
         "accuracy": round(accuracy, 4) if accuracy is not None else None,  # 分类准确率
         "avg_latency_ms": round(avg_latency_ms, 1),             # 平均耗时
         "category_distribution": category_dist,
+        "emotion_distribution": emotion_dist,                   # 情绪分布
+        "negative_ratio": negative_ratio,                       # 负面情绪占比
         "feedback_up": feedback_up,
         "feedback_down": feedback_down,
         "satisfaction_rate": round(feedback_up / (feedback_up + feedback_down), 4)

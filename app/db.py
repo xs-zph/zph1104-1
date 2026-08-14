@@ -27,7 +27,40 @@ CREATE TABLE IF NOT EXISTS tickets (
     reply_source  VARCHAR(16),        -- template / rag / agent / chat / escalate
     human_answer  TEXT,               -- 人工客服的回答（升级工单处理后填写）
     latency_ms    INT,                -- 处理耗时（毫秒）
+    phone         VARCHAR(32),        -- 客户联系电话（若有）
+    device        VARCHAR(64),        -- 渠道/设备信息（web / wechat）
+    emotion       VARCHAR(16),        -- 情绪识别结果：负面 / 中性 / 正面
+    emotion_intensity VARCHAR(16),    -- 负面情绪强度：normal / extreme
+    multi_intent  TINYINT(1) DEFAULT 0, -- 是否多诉求混杂（复合请求 → 转人工）
+    rag_chunks    TEXT,               -- 命中的 RAG 片段（JSON 数组）
+    route_trace   TEXT,               -- 路由决策链路（JSON，全链路留痕）
     created_at    DATETIME            -- 创建时间
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# 工单状态流转 / 审计日志表（每次状态变化、关键动作都留痕）
+_TICKET_LOGS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ticket_logs (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    ticket_id     INT NOT NULL,        -- 关联工单
+    action        VARCHAR(64),         -- 动作类型：created / escalated / resolved / feedback_tag ...
+    detail        TEXT,                -- 动作详情
+    operator      VARCHAR(64),         -- 操作者（系统 / 人工客服用户名）
+    created_at    DATETIME,
+    INDEX idx_logs_ticket (ticket_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# 人工负反馈标注表（人工坐席对错误工单打标签，用于迭代优化）
+_FEEDBACK_TAGS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ticket_feedback_tags (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    ticket_id     INT NOT NULL,        -- 关联工单
+    tag           VARCHAR(32),         -- 分类错误 / 知识库无答案 / AI回答有误 / 安抚不合适
+    note          TEXT,                -- 人工补充说明
+    operator      VARCHAR(64),         -- 标注人
+    created_at    DATETIME,
+    INDEX idx_fbt_ticket (ticket_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -105,6 +138,8 @@ def init_db():
             cur.execute(_SCHEMA)
             cur.execute(_USERS_SCHEMA)
             cur.execute(_ORDERS_SCHEMA)
+            cur.execute(_TICKET_LOGS_SCHEMA)
+            cur.execute(_FEEDBACK_TAGS_SCHEMA)
             _migrate(cur)
     finally:
         conn.close()
@@ -126,6 +161,13 @@ def _migrate(cur):
     _ensure_column(cur, "tickets", "human_answer", "human_answer TEXT")
     _ensure_column(cur, "tickets", "feedback", "feedback VARCHAR(8)")
     _ensure_column(cur, "tickets", "username", "username VARCHAR(64)")
+    _ensure_column(cur, "tickets", "phone", "phone VARCHAR(32)")
+    _ensure_column(cur, "tickets", "device", "device VARCHAR(64)")
+    _ensure_column(cur, "tickets", "emotion", "emotion VARCHAR(16)")
+    _ensure_column(cur, "tickets", "emotion_intensity", "emotion_intensity VARCHAR(16)")
+    _ensure_column(cur, "tickets", "multi_intent", "multi_intent TINYINT(1) DEFAULT 0")
+    _ensure_column(cur, "tickets", "rag_chunks", "rag_chunks TEXT")
+    _ensure_column(cur, "tickets", "route_trace", "route_trace TEXT")
 
 
 def insert_ticket(**fields) -> int:
@@ -410,5 +452,128 @@ def cancel_order(username: str, order_id: str) -> dict | None:
             if cur.rowcount == 0:
                 return None
         return get_order_for_user(username, order_id)
+    finally:
+        conn.close()
+
+
+# ---------------- 审计日志 / 状态流转（全链路留痕） ----------------
+
+def insert_ticket_log(ticket_id: int, action: str, detail: str = "",
+                      operator: str | None = None) -> int:
+    """给某张工单写一条审计/状态流转日志，返回日志自增 id。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO ticket_logs (ticket_id, action, detail, operator, created_at) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (ticket_id, action, detail, operator,
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def list_ticket_logs(ticket_id: int) -> list[dict]:
+    """按工单查询其全部审计日志（时间正序）。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM ticket_logs WHERE ticket_id = %s ORDER BY id ASC",
+                (ticket_id,),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def log_status_change(ticket_id: int, to_status: str, operator: str | None = None) -> int:
+    """记录一次工单状态流转（便于追溯「待 AI → 人工 → 已完结」的完整轨迹）。"""
+    return insert_ticket_log(ticket_id, "status_change", f"状态变更为 {to_status}", operator)
+
+
+# ---------------- 多维度工单检索 ----------------
+
+def search_tickets(keyword: str | None = None, category: str | None = None,
+                   status: str | None = None, emotion: str | None = None,
+                   username: str | None = None, limit: int = 100) -> list[dict]:
+    """多维度检索工单：按关键词 / 分类 / 状态 / 情绪 / 用户名筛选。
+
+    全部条件可选，未传则不过滤；关键词对「工单原文」做模糊匹配。
+    """
+    clauses = []
+    params: list = []
+    if keyword:
+        clauses.append("ticket_text LIKE %s")
+        params.append(f"%{keyword}%")
+    if category:
+        clauses.append("category = %s")
+        params.append(category)
+    if status:
+        clauses.append("status = %s")
+        params.append(status)
+    if emotion:
+        clauses.append("emotion = %s")
+        params.append(emotion)
+    if username:
+        clauses.append("username = %s")
+        params.append(username)
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = f"SELECT * FROM tickets {where} ORDER BY id DESC LIMIT %s"
+    params.append(limit)
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+# ---------------- 人工负反馈标注（迭代优化） ----------------
+
+def add_feedback_tag(ticket_id: int, tag: str, note: str = "",
+                     operator: str | None = None) -> int:
+    """人工坐席给错误工单打一个标签（分类错误 / 知识库无答案 / AI回答有误 / 安抚不合适）。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO ticket_feedback_tags (ticket_id, tag, note, operator, created_at) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (ticket_id, tag, note, operator,
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def list_feedback_tags(ticket_id: int) -> list[dict]:
+    """查询某张工单上的人工标注标签。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM ticket_feedback_tags WHERE ticket_id = %s ORDER BY id ASC",
+                (ticket_id,),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def list_all_feedback_tags(limit: int = 200) -> list[dict]:
+    """查询全部人工标注（供后台统计「哪类错误最多」）。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM ticket_feedback_tags ORDER BY id DESC LIMIT %s",
+                        (limit,))
+            return cur.fetchall()
     finally:
         conn.close()

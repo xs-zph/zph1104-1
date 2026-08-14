@@ -104,9 +104,15 @@ def clear_conversation(username: str = Depends(auth.require_user)):
 @app.post("/api/tickets")
 def create_ticket(payload: TicketCreate, username: str = Depends(auth.require_user)):
     """发送一条客服消息 / 提交一张工单，返回 AI 处理结果。"""
-    record = router.process_ticket(payload.ticket_text, username=username)
+    record = router.process_ticket(payload.ticket_text, username=username,
+                                   phone=payload.phone,
+                                   device=payload.device or "web")
     ticket_id = router.save_processed(record)
     record["id"] = ticket_id
+    # 全链路留痕：记录工单创建 + 最终状态（供状态流转追溯）
+    db.insert_ticket_log(ticket_id, "created",
+                         f"工单创建，状态 {record['status']}，来源 {record['reply_source']}",
+                         username)
     return record
 
 
@@ -116,6 +122,18 @@ def list_tickets(username: str = Depends(auth.require_user)):
     return db.list_tickets()
 
 
+@app.get("/api/tickets/search")
+def search_tickets(keyword: str | None = None, category: str | None = None,
+                   status: str | None = None, emotion: str | None = None,
+                   username: str = Depends(auth.require_admin)):
+    """多维度检索工单：按关键词 / 分类 / 状态 / 情绪 / 用户（仅管理员）。
+
+    注意：必须定义在 /api/tickets/{ticket_id} 之前，否则 "search" 会被当成
+    ticket_id 尝试解析成 int 而返回 422。
+    """
+    return db.search_tickets(keyword=keyword, category=category, status=status, emotion=emotion)
+
+
 @app.get("/api/tickets/{ticket_id}")
 def get_ticket(ticket_id: int, username: str = Depends(auth.require_user)):
     """查询单张工单详情。"""
@@ -123,6 +141,15 @@ def get_ticket(ticket_id: int, username: str = Depends(auth.require_user)):
     if ticket is None:
         raise HTTPException(status_code=404, detail="工单不存在")
     return ticket
+
+
+@app.get("/api/tickets/{ticket_id}/logs")
+def ticket_logs(ticket_id: int, username: str = Depends(auth.require_admin)):
+    """查询某张工单的状态流转 / 审计日志（仅管理员）。"""
+    ticket = db.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    return db.list_ticket_logs(ticket_id)
 
 
 @app.post("/api/tickets/{ticket_id}/feedback")
@@ -154,6 +181,7 @@ def resolve_escalation(ticket_id: int, payload: ResolveRequest, username: str = 
 
     answer = (payload.human_answer or "").strip()
     db.update_ticket_answer(ticket_id, answer, "resolved")
+    db.log_status_change(ticket_id, "resolved", username)
 
     result = {"status": "ok", "id": ticket_id, "saved_to_kb": False}
     if answer and payload.save_to_kb:
@@ -238,7 +266,7 @@ async def wechat_message(request: Request):
     if msg.get("MsgType") != "text":
         # 只处理文本消息，其他类型直接返回 success
         return Response(content="success", media_type="text/plain")
-    reply = router.process_ticket(msg.get("Content", ""))["reply"]
+    reply = router.process_ticket(msg.get("Content", ""), device="wechat")["reply"]
     xml = wechat.build_text_reply(msg["FromUserName"], msg["ToUserName"], reply)
     return Response(content=xml, media_type="application/xml")
 
