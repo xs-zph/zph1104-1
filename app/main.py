@@ -13,6 +13,8 @@
   admin / 123456   —— 管理员（客服后台）
   user  / 123456   —— 客户（聊天界面）
 """
+import threading
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +28,9 @@ setup_logging()
 db.init_db()
 auth.seed_users()
 db.seed_orders()
+
+# 后台预热 RAG 向量化模型，避免首个 FAQ 请求等待模型冷加载（约几十秒）
+threading.Thread(target=rag.warmup, daemon=True).start()
 
 app = FastAPI(
     title="AI客服工单自动化系统",

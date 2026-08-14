@@ -12,7 +12,7 @@
 import logging
 import time
 
-from app import agent, cache, categories, classifier, config, daily, db, memory, privacy, responder
+from app import agent, cache, categories, classifier, config, daily, db, memory, privacy, rag, responder
 
 logger = logging.getLogger("app.router")
 ticket_logger = logging.getLogger("tickets")
@@ -105,13 +105,33 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
         cache.set(cache_key, record)  # 闲聊回复确定性较强，缓存加速
         return record
 
-    # 1. 分类
+    # 3. RAG 优先：知识库命中就直接返回答案，不调大模型（毫秒级，性能关键）
+    rag_hit = rag.best_answer(safe_text)
+    if rag_hit is not None:
+        record = {
+            "ticket_text": safe_text,
+            "username": username,
+            "category": "知识库命中",
+            "ground_truth": ground_truth,
+            "confidence": 1.0,
+            "reason": f"RAG 知识库命中（距离 {rag_hit['distance']:.3f}），直接返回，未调用大模型",
+            "status": "auto",
+            "reply": rag_hit["answer"],
+            "reply_source": "rag",
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+        }
+        ticket_logger.info("RAG 命中（距离 %.3f）：%s", rag_hit["distance"], safe_text)
+        memory.append(username, "user", safe_text)
+        memory.append(username, "assistant", rag_hit["answer"])
+        return record
+
+    # 4. 分类
     result = classifier.classify(safe_text)
     category = result["category"]
     confidence = result["confidence"]
     reason = result["reason"]
 
-    # 2. 路由判断：决定「自动处理」还是「人工升级」
+    # 5. 路由判断：决定「自动处理」还是「人工升级」
     if confidence < config.Config.CONFIDENCE_THRESHOLD:
         status, reply_source = "escalated", "escalate"
         reply = "抱歉，这个问题我暂时无法准确判断，已经帮您转接人工客服，请稍候。"

@@ -93,6 +93,15 @@ def _get_embedding_fn():
     return _embedding_fn
 
 
+def warmup() -> None:
+    """预加载向量化模型（供启动时后台调用），避免首个检索请求等待模型冷加载。"""
+    try:
+        _get_embedding_fn()
+        logger.info("RAG 向量化模型预热完成")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("RAG 预热失败：%s", e)
+
+
 def _create_embedding_fn():
     """优先用中文语义向量模型；失败则回退本地哈希（离线兜底，保证可用）。"""
     model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
@@ -121,15 +130,21 @@ def parse_faq(faq_path) -> list[dict]:
     文件格式约定：
         ## Q: 问题内容
         A: 答案内容
+
+    逐行解析（只认行首的 ## Q: / A:），标题(#)、说明(>)、空行等其它行自动忽略，
+    避免头部说明里字面出现的「## Q: / A:」被误当成一条 FAQ。
     """
-    text = faq_path.read_text(encoding="utf-8")
-    # 用正则把「## Q: ...」和「A: ...」成对提取出来
-    pairs = re.findall(r"## Q:\s*(.+?)\s*\nA:\s*(.+?)(?=\n## Q:|\Z)", text, re.S)
-    result = []
-    for q, a in pairs:
-        result.append({"question": q.strip(), "answer": a.strip()})
-    logger.info("解析 FAQ 完成，共 %d 条问答", len(result))
-    return result
+    pairs = []
+    current_q = None
+    for raw in faq_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("## Q:"):
+            current_q = line[len("## Q:"):].strip()
+        elif line.startswith("A:") and current_q is not None:
+            pairs.append({"question": current_q, "answer": line[len("A:"):].strip()})
+            current_q = None
+    logger.info("解析 FAQ 完成，共 %d 条问答", len(pairs))
+    return pairs
 
 
 def ingest(faq_path=None, reset: bool = True):
@@ -184,6 +199,25 @@ def retrieve(query: str, top_k: int = None) -> list[dict]:
             "distance": dist,
         })
     return chunks
+
+
+def best_answer(question: str, top_k: int = None) -> dict | None:
+    """RAG 优先检索：知识库 top-1 命中（距离达标）时返回其问答，否则返回 None。
+
+    这是「先查 RAG、查不到再上大模型、实在不行转人工」三级链路的第一级：
+      - 命中：直接返回知识库答案（不调用大模型，毫秒级）；
+      - 未命中：返回 None，由调用方降级到 LLM / Agent。
+    """
+    hits = retrieve(question, top_k=top_k)
+    if not hits:
+        return None
+    best = hits[0]
+    distance = best.get("distance")
+    if distance is None or distance > config.Config.RAG_MAX_DISTANCE:
+        return None
+    if not (best.get("answer") or "").strip():
+        return None
+    return best
 
 
 def list_entries() -> list[dict]:

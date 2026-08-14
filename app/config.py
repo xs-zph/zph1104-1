@@ -46,6 +46,10 @@ class Config:
     # 低于 0.8 能兜住「分错且低置信」的难样本，避免投诉/纠纷被自动处理。
     CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.8"))
 
+    # RAG 优先检索：知识库 top-1 的 L2 距离 ≤ 此值才视为「命中」，直接返回知识库答案（不调大模型）。
+    # 距离越小越相似（0=完全相同，2=完全相反）。实测：0.4 强相关 / 0.6 相关 / 0.8 弱相关(易答非所问) / 1.1+ 无关。
+    RAG_MAX_DISTANCE = float(os.getenv("RAG_MAX_DISTANCE", "0.6"))
+
     # 天气查询的默认城市（客户没指定城市时使用）
     DEFAULT_CITY = os.getenv("DEFAULT_CITY", "邵阳")
 
