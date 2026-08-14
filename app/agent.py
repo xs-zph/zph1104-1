@@ -12,7 +12,7 @@
 """
 import logging
 
-from app import daily, db, llm, memory, rag
+from app import config, daily, db, llm, memory, rag
 from prompts import agent as agent_prompt
 
 logger = logging.getLogger("app.agent")
@@ -118,11 +118,19 @@ TOOLS = [
 
 
 def _search_faq(question: str) -> str:
-    """工具：检索知识库（RAG）。"""
+    """工具：检索知识库（RAG），只返回真正相关的条目。
+
+    关键：按 L2 距离过滤掉不相关条目。若不过滤，top_k=3 会强行返回
+    「距离最近但毫不相关」的 3 条，污染模型上下文，导致答非所问。
+    """
     chunks = rag.retrieve(question, top_k=3)
-    if not chunks:
+    relevant = [
+        c for c in chunks
+        if c.get("distance") is not None and c["distance"] <= config.Config.RAG_MAX_DISTANCE
+    ]
+    if not relevant:
         return "知识库暂无相关内容"
-    return "\n".join(f"问：{c['question']}\n答：{c['answer']}" for c in chunks)
+    return "\n".join(f"问：{c['question']}\n答：{c['answer']}" for c in relevant)
 
 
 def _list_my_orders(username: str | None) -> str:

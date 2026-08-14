@@ -18,6 +18,9 @@ logger = logging.getLogger("app.llm")
 # 单条用户输入 / 工具结果的长度上限，超出部分截断，避免异常长文撑爆上下文窗口
 MAX_USER_CHARS = 4000
 
+# 复用同一个 HTTP 会话（keep-alive），避免每次调用都重新 TCP + TLS 握手
+_session = requests.Session()
+
 
 def _truncate(text: str, max_chars: int = MAX_USER_CHARS) -> str:
     """截断过长文本，防止「内容太长」导致上下文被撑爆或回复被截断。"""
@@ -71,7 +74,7 @@ def _call_api(messages: list, json_mode: bool = False, max_tokens: int = 1024,
         payload["tools"] = tools
 
     logger.info("调用 DeepSeek（model=%s）", config.Config.MODEL)
-    resp = requests.post(
+    resp = _session.post(
         url,
         headers={
             "Authorization": f"Bearer {config.Config.DEEPSEEK_API_KEY}",
@@ -112,7 +115,7 @@ def complete(system: str, user: str, json_mode: bool = False, max_tokens: int = 
 
 
 def complete_with_tools(system: str, user: str, tools: list, execute,
-                        max_steps: int = 4, history: list | None = None) -> str:
+                        max_steps: int = 3, history: list | None = None) -> str:
     """Agent 循环：让模型根据用户问题自行决定调用哪些工具，最终生成回复。
 
     参数：
@@ -129,7 +132,7 @@ def complete_with_tools(system: str, user: str, tools: list, execute,
     messages.append({"role": "user", "content": _truncate(user)})
 
     for _ in range(max_steps):
-        data = _call_api(messages, tools=tools, max_tokens=1024, temperature=0.3)
+        data = _call_api(messages, tools=tools, max_tokens=512, temperature=0.3)
         message = data["choices"][0]["message"]
         messages.append(message)
 

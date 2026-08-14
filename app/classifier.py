@@ -22,7 +22,7 @@ def classify(ticket_text: str, history: list | None = None) -> dict:
         system=classify_prompt.SYSTEM_PROMPT,
         user=classify_prompt.build_user_prompt(ticket_text, history),
         json_mode=True,
-        max_tokens=512,
+        max_tokens=200,
     )
 
     category = str(result.get("category", "其他")).strip()

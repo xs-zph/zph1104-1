@@ -71,7 +71,14 @@ class SentenceEmbeddingFunction(EmbeddingFunction):
     def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
         from sentence_transformers import SentenceTransformer
         self._model_name = model_name
-        self._model = SentenceTransformer(model_name)
+        # 优先本地缓存加载（local_files_only=True 跳过 hf-mirror 逐文件 HEAD 校验，
+        # 重启/首次请求能从 ~90 秒降到几秒）；缓存不存在时再回退联网下载。
+        try:
+            self._model = SentenceTransformer(model_name, local_files_only=True)
+            logger.info("已从本地缓存加载向量模型：%s", model_name)
+        except Exception:
+            logger.info("本地缓存未命中，改为联网加载向量模型：%s", model_name)
+            self._model = SentenceTransformer(model_name)
 
     def __call__(self, input: Documents) -> Embeddings:
         vectors = self._model.encode(

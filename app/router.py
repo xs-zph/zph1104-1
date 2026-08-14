@@ -173,10 +173,10 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
     # 6. 路由判断：决定「自动处理」还是「人工升级」
     if confidence < config.Config.CONFIDENCE_THRESHOLD:
         status, reply_source = "escalated", "escalate"
-        reply = "抱歉，这个问题我暂时无法准确判断，已经帮您转接人工客服，请稍候。"
+        reply = "非常抱歉，我一时没能准确理解您的意思，让您久等了。为了不耽误您，已经帮您转接人工客服，请稍候，专员会尽快为您处理。"
     elif category in categories.ESCALATE_CATEGORIES:
         status, reply_source = "escalated", "escalate"
-        reply = f"您的问题涉及「{category}」，需要人工客服为您进一步核实处理，已经帮您转接，请稍候。"
+        reply = f"非常抱歉给您带来不好的体验，我完全理解您的心情。您的问题涉及「{category}」，需要人工客服为您进一步核实，已经帮您转接，请稍候，专员会尽快为您处理。"
     elif category in categories.AUTO_CATEGORIES:
         # 所有可自动处理的类别一律交给 Agent：
         # 大模型（DeepSeek）负责理解问题 + 调用工具（RAG 知识库 / 订单 / 物流 / 退款）
@@ -186,7 +186,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
     else:
         # 兜底：未识别的类别一律转人工，绝不擅自作答
         status, reply_source = "escalated", "escalate"
-        reply = "抱歉，这个问题我需要人工客服为您进一步核实，已经帮您转接，请稍候。"
+        reply = "非常抱歉没能马上帮您解决，让您久等了。已经帮您转接人工客服，请稍候，专员会尽快为您核实处理。"
 
     latency_ms = int((time.perf_counter() - started) * 1000)
 
