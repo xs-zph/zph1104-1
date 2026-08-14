@@ -17,6 +17,7 @@ import hashlib
 import logging
 import os
 import re
+import threading
 import uuid
 
 import chromadb
@@ -80,16 +81,20 @@ class SentenceEmbeddingFunction(EmbeddingFunction):
 
 
 _embedding_fn = None
+_embedding_lock = threading.Lock()
 
 
 def _get_embedding_fn():
     """获取（或创建）向量化函数。
 
     优先用中文语义模型（支持同义改写检索）；不可用时回退本地哈希。
+    用双重检查锁防止冷启动时（模型加载约几十秒）多个线程并发重复加载。
     """
     global _embedding_fn
     if _embedding_fn is None:
-        _embedding_fn = _create_embedding_fn()
+        with _embedding_lock:
+            if _embedding_fn is None:
+                _embedding_fn = _create_embedding_fn()
     return _embedding_fn
 
 
