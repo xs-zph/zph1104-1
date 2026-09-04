@@ -3,42 +3,105 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>登录 - AI客服工单自动化系统</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <title>登录 - 小鹏 AI 客服</title>
+    <link rel="stylesheet" href="/static/style.css?v=20260904-login">
 </head>
-<body class="login-body">
-    <div class="login-card tilt">
-        <div class="login-logo">
-            <div class="login-logo-icon">AI</div>
-            <h1>AI客服工单自动化系统</h1>
-            <p class="login-sub">智能分类 · 条件路由 · 自动回复 · 人工升级</p>
-        </div>
+<body class="login-body login-page">
+    <div class="login-backdrop" aria-hidden="true"></div>
+    <div class="login-shade" aria-hidden="true"></div>
 
-        <form id="login-form" class="login-form" autocomplete="off">
-            <div class="field">
-                <label for="username">用户名</label>
-                <input type="text" id="username" placeholder="请输入用户名" required>
+    <main class="login-shell">
+        <section class="login-identity" aria-label="小鹏 AI 客服">
+            <div class="identity-topline"><span class="signal-dot"></span> XIAOPENG SERVICE INTELLIGENCE</div>
+            <div class="brand-lockup">
+                <div class="login-logo-icon" aria-hidden="true">鹏</div>
+                <span>小鹏</span>
             </div>
-            <div class="field">
-                <label for="password">密码</label>
-                <input type="password" id="password" placeholder="请输入密码" required>
+            <h1>让每一次服务，<br><strong>都更快得到回应。</strong></h1>
+            <p class="identity-copy">统一连接智能客服、人工坐席与企业运营，让问题从被提出到被解决，都有清晰的路径。</p>
+            <div class="identity-meta">
+                <span>AI 客服工单自动化系统</span>
+                <span class="meta-line"></span>
+                <span>安全接入 · 全程可追踪</span>
             </div>
-            <div class="login-error" id="login-error" hidden></div>
-            <button type="submit" class="btn btn-primary btn-block" id="login-btn">登 录</button>
-        </form>
+        </section>
 
-        <div class="login-demo">
-            <span>演示账号</span>
-            <div class="login-demo-row">
-                <code>admin / 123456</code><em>客服后台</em>
+        <section class="login-card login-panel tilt" aria-labelledby="login-title">
+            <div class="login-panel-head">
+                <div>
+                    <p class="panel-kicker">WELCOME BACK</p>
+                    <h2 id="login-title">进入小鹏</h2>
+                </div>
+                <div class="login-secure-mark" title="安全连接" aria-label="安全连接">
+                    <span></span><span></span><span></span>
+                </div>
             </div>
-            <div class="login-demo-row">
-                <code>user / 123456</code><em>客户聊天</em>
-            </div>
-        </div>
-    </div>
 
-    <script src="/static/login.js"></script>
-    <script src="/static/effects.js"></script>
+            <div class="login-stage" id="mode-stage">
+                <p class="stage-title">请选择使用端</p>
+                <p class="stage-desc">不同身份将进入独立的服务空间</p>
+                <div class="login-mode-grid" role="group" aria-label="选择登录端">
+                    <button type="button" class="login-mode-card" data-mode="personal">
+                        <span class="mode-icon mode-icon-personal" aria-hidden="true">P</span>
+                        <span class="mode-card-copy"><strong>个人端</strong><small>咨询订单与售后服务</small></span>
+                        <span class="mode-arrow" aria-hidden="true">↗</span>
+                    </button>
+                    <button type="button" class="login-mode-card" data-mode="enterprise">
+                        <span class="mode-icon mode-icon-enterprise" aria-hidden="true">E</span>
+                        <span class="mode-card-copy"><strong>企业端</strong><small>账号、坐席与运营管理</small></span>
+                        <span class="mode-arrow" aria-hidden="true">↗</span>
+                    </button>
+                </div>
+                <p class="stage-footnote"><span class="footnote-mark">i</span> 企业账号由管理员统一创建与授权</p>
+                <div class="login-demo-accounts" hidden aria-hidden="true">admin / 123456 · 系统管理员 · manager / 123456 · 经理仪表盘 · agent / 123456 · 客服工作台 · user / 123456 · 客户聊天</div>
+            </div>
+
+            <div class="login-stage hidden" id="credentials-stage">
+                <button type="button" class="login-stage-back" id="back-to-modes">← 返回选择使用端</button>
+                <div class="selected-mode" id="selected-mode-label"></div>
+                <form id="login-form" class="login-form" autocomplete="off">
+                    <div class="field">
+                        <label for="username">账号</label>
+                        <input type="text" id="username" placeholder="请输入用户名" autocomplete="username" required>
+                    </div>
+                    <div class="field">
+                        <label for="password">密码</label>
+                        <input type="password" id="password" placeholder="请输入密码" autocomplete="current-password" required>
+                    </div>
+                    <div class="login-error" id="login-error" hidden></div>
+                    <button type="submit" class="btn btn-primary btn-block login-submit" id="login-btn">继续登录 <span aria-hidden="true">→</span></button>
+                </form>
+                <div class="login-links">
+                    <a href="/register" id="register-link">注册个人账号</a>
+                    <a href="/forgot-password">忘记密码</a>
+                </div>
+            </div>
+
+            <div class="login-stage hidden" id="phone-stage">
+                <button type="button" class="login-stage-back" id="back-to-credentials">← 返回账号登录</button>
+                <div class="selected-mode"><span class="phone-step-number">02</span><span><strong>验证手机号</strong><small id="phone-description">完成验证后才能建立安全会话</small></span></div>
+                <form id="phone-form" class="login-form" autocomplete="off">
+                    <div class="field">
+                        <label for="phone">手机号</label>
+                        <input type="tel" id="phone" placeholder="请输入常用手机号" inputmode="numeric" autocomplete="tel" maxlength="11" required>
+                    </div>
+                    <div class="field code-field">
+                        <label for="phone-code">短信验证码</label>
+                        <div class="code-input-row">
+                            <input type="text" id="phone-code" placeholder="6 位验证码" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+                            <button type="button" class="btn btn-ghost send-code-btn" id="send-code-btn">发送验证码</button>
+                        </div>
+                    </div>
+                    <div class="login-hint" id="phone-hint" hidden></div>
+                    <div class="login-error" id="phone-error" hidden></div>
+                    <button type="submit" class="btn btn-primary btn-block login-submit" id="verify-phone-btn">完成验证 <span aria-hidden="true">→</span></button>
+                </form>
+            </div>
+
+            <div class="login-panel-footer"><span class="footer-pulse"></span> 小鹏智能服务系统</div>
+        </section>
+    </main>
+
+    <script src="/static/login.js?v=20260904-login"></script>
 </body>
 </html>

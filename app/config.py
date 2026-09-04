@@ -25,6 +25,21 @@ class Config:
     DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
     MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
     DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    # 图片识别使用独立视觉模型；留空时走人工降级。
+    VISION_MODEL = os.getenv("VISION_MODEL", "")
+    VISION_BASE_URL = os.getenv("VISION_BASE_URL") or DEEPSEEK_BASE_URL
+    VISION_API_KEY = os.getenv("VISION_API_KEY") or DEEPSEEK_API_KEY
+    MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(8 * 1024 * 1024)))
+
+    # 企业部署基础设施；留空 Redis 时继续使用单机内存降级。
+    REDIS_URL = os.getenv("REDIS_URL", "")
+    REDIS_KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "ai_ticket:")
+    DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
+    DB_POOL_TIMEOUT_SECONDS = float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "5"))
+    DEFAULT_SLA_MINUTES = int(os.getenv("DEFAULT_SLA_MINUTES", "30"))
+    SLA_SCAN_INTERVAL_SECONDS = float(os.getenv("SLA_SCAN_INTERVAL_SECONDS", "30"))
+    # 客户超过该时长没有发送新消息时，后台自动结束人工会话；设为 0 可关闭。
+    HUMAN_IDLE_TIMEOUT_MINUTES = int(os.getenv("HUMAN_IDLE_TIMEOUT_MINUTES", "30"))
 
     # ---- 路径 ----
     DATA_DIR = BASE_DIR / "data"
@@ -39,6 +54,18 @@ class Config:
     MYSQL_USER = os.getenv("MYSQL_USER", "root")
     MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
     MYSQL_DB = os.getenv("MYSQL_DB", "ai_ticket")
+
+    # 登录会话 TTL，默认 8 小时；后续迁移 Redis 时沿用该配置。
+    SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "28800"))
+    SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "ai_ticket_session")
+    # 本地 HTTP 演示需为 false；生产 HTTPS 必须设为 true。
+    SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() in {
+        "1", "true", "yes", "on"
+    }
+    # P0 找回密码口令。生产环境必须通过 .env 配置随机强口令；后续可替换为短信/邮件验证码。
+    PASSWORD_RESET_CODE = os.getenv("PASSWORD_RESET_CODE", "")
+    PHONE_VERIFICATION_TTL_SECONDS = int(os.getenv("PHONE_VERIFICATION_TTL_SECONDS", "300"))
+    PHONE_VERIFICATION_MAX_ATTEMPTS = int(os.getenv("PHONE_VERIFICATION_MAX_ATTEMPTS", "5"))
 
     # ---- 业务参数 ----
     # 分类置信度低于该值时，才升级给人工处理（人工是最后保证）。
@@ -65,6 +92,29 @@ class Config:
 
     # RAG 向量召回的候选条数（召回 Top5 → LLM 重排 Top3）
     RAG_TOP_K = 5
+
+    # 用户实体画像后台提取线程数（当前服务实例内有界执行）
+    PROFILE_MAX_WORKERS = int(os.getenv("PROFILE_MAX_WORKERS", "2"))
+
+    # 本地只读 MCP：发现/调用失败时由 Agent 回退到内置工具。
+    MCP_ENABLED = os.getenv("MCP_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+    MCP_SERVER_PATH = os.getenv(
+        "MCP_SERVER_PATH",
+        str(BASE_DIR / "mcp_servers" / "business_server.py"),
+    )
+    MCP_TIMEOUT_SECONDS = float(os.getenv("MCP_TIMEOUT_SECONDS", "8"))
+
+    # 开发/演示环境自动准备测试账号和订单；生产环境可设为 false。
+    DEMO_DATA_ENABLED = os.getenv("DEMO_DATA_ENABLED", "true").lower() in {
+        "1", "true", "yes", "on"
+    }
+    # 只在演示模式返回测试码；生产环境应接入短信服务且不配置此项。
+    PHONE_VERIFICATION_TEST_CODE = os.getenv(
+        "PHONE_VERIFICATION_TEST_CODE", "123456" if DEMO_DATA_ENABLED else ""
+    )
+    PHONE_VERIFICATION_SECRET = os.getenv(
+        "PHONE_VERIFICATION_SECRET", "local-phone-verification-secret"
+    )
 
     @classmethod
     def ensure_dirs(cls):

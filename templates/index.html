@@ -3,74 +3,57 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI客服 - 智能工单系统</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <title>智能客服</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260903-8" />
 </head>
 <body class="chat-body">
   <div class="chat-app">
-    <!-- 侧边栏 -->
+    <div class="mobile-topbar">
+      <div class="mobile-brand"><span class="mobile-brand-mark">AI</span><strong>智能客服</strong></div>
+      <button class="icon-btn mobile-menu-btn" id="mobile-sidebar-toggle" type="button" title="打开菜单" aria-label="打开菜单" aria-expanded="false">☰</button>
+    </div>
     <aside class="chat-sidebar">
       <div class="sidebar-brand">
         <div class="sidebar-logo">AI</div>
-        <div>
-          <div class="sidebar-title">AI智能客服</div>
-          <div class="sidebar-sub">7×24 小时在线</div>
-        </div>
+        <div><div class="sidebar-title">智能客服</div><div class="sidebar-sub">日常咨询与售后协助</div></div>
       </div>
-
-      <div class="sidebar-section">
-        <div class="sidebar-label">当前用户</div>
-        <div class="sidebar-user">
-          <span id="current-username">—</span>
-          <em id="current-role">—</em>
-        </div>
+      <div class="sidebar-section sidebar-account">
+        <div class="sidebar-label">我的服务</div>
+        <strong id="current-username">—</strong>
+        <a class="archive-link" href="/profile">查看我的服务档案 <span aria-hidden="true">→</span></a>
       </div>
-
       <div class="sidebar-section">
-        <div class="sidebar-label">快速提问（点击直接发送）</div>
+        <div class="sidebar-label">常用服务</div>
         <div class="quick-list">
-          <button class="quick-q" data-q="我的快递三天没更新物流了，帮我查一下">🚚 物流查询</button>
-          <button class="quick-q" data-q="这款产品的保修期是多久？">🛍️ 商品咨询</button>
-          <button class="quick-q" data-q="订单完成后怎么开电子发票？">🧾 发票问题</button>
-          <button class="quick-q" data-q="衣服尺码不合适想退货，怎么操作？">↩️ 退货申请</button>
-          <button class="quick-q" data-q="产品坏了需要维修，怎么申请？">🔧 售后维修</button>
-          <button class="quick-q" data-q="帮我查一下我的所有订单">📦 我的订单</button>
-          <button class="quick-q" data-q="我提交的工单处理得怎么样了？">🗂️ 查工单进度</button>
+          <button class="quick-q" data-q="我的快递到哪了？" type="button"><span>物流进度</span><b aria-hidden="true">→</b></button>
+          <button class="quick-q" data-q="帮我查一下我的订单" type="button"><span>我的订单</span><b aria-hidden="true">→</b></button>
+          <button class="quick-q" data-q="我提交的售后工单进度怎么样了？" type="button"><span>售后进度</span><b aria-hidden="true">→</b></button>
         </div>
       </div>
-
-      <div class="sidebar-footer">
-        <a class="btn btn-ghost btn-block" id="admin-link" href="/admin" hidden>进入客服后台</a>
-        <button class="btn btn-ghost btn-block" id="logout-btn">退出登录</button>
-      </div>
+      <div class="sidebar-footer"><button class="btn btn-ghost btn-block" id="logout-btn" type="button">退出登录</button></div>
     </aside>
-
-    <!-- 主聊天区 -->
     <main class="chat-main">
       <header class="chat-header">
-        <div class="chat-header-info">
-          <span class="chat-status-dot"></span>
-          <strong>AI 客服小助手</strong>
+        <div class="chat-header-info"><span class="chat-status-dot"></span><strong>AI 客服小助手</strong></div>
+        <div class="chat-header-actions">
+          <div class="chat-header-tip">复杂问题可随时转人工</div>
+          <button class="btn btn-ghost" id="end-human-session-btn" type="button" hidden>结束人工会话</button>
+          <button class="btn btn-ghost" id="new-chat-btn" type="button">＋ 新对话</button>
         </div>
-        <div class="chat-header-tip">处理不了的问题会自动转接人工客服</div>
-        <button class="btn btn-ghost" id="new-chat-btn">＋ 新对话</button>
       </header>
-
-      <div class="chat-messages" id="chat-messages">
-        <!-- 消息由 JS 动态渲染 -->
-      </div>
-
+      <div class="chat-messages" id="chat-messages"></div>
       <div class="chat-input-area">
         <form id="chat-form" class="chat-form" autocomplete="off">
-          <textarea id="chat-input" rows="1" placeholder="请输入您的问题，例如：我的快递到哪了？"></textarea>
+          <input id="image-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden>
+          <button class="icon-btn image-upload-btn" id="image-upload-btn" type="button" title="上传图片识别" aria-label="上传图片识别">📎</button>
+          <textarea id="chat-input" rows="1" placeholder="输入问题，例如：我的快递到哪了？"></textarea>
           <button type="submit" class="btn btn-primary" id="send-btn">发送</button>
         </form>
-        <div class="chat-disclaimer">AI 生成内容仅供参考，复杂问题请转人工客服</div>
+        <div class="image-preview" id="image-preview" aria-live="polite" hidden></div>
+        <div class="chat-disclaimer">回答仅供参考，订单和售后状态以页面显示为准</div>
       </div>
     </main>
   </div>
-
-  <script src="/static/app.js"></script>
-  <script src="/static/effects.js"></script>
+  <script src="/static/app.js?v=20260903-8"></script>
 </body>
 </html>

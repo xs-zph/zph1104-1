@@ -12,6 +12,7 @@
   - responder.py   闲聊回复
   - privacy.py     敏感信息脱敏
   - memory.py      多轮对话记忆
+  - profile.py     用户实体画像记忆（后台异步提取）
   - daily.py       日常问答工具（时间/天气）
   - cache.py       响应缓存
   - wechat.py      微信公众号接入

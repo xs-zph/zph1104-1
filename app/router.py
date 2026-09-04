@@ -15,7 +15,7 @@ import json
 import logging
 import time
 
-from app import agent, cache, categories, classifier, config, daily, db, memory, privacy, rag, responder
+from app import cache, categories, classifier, config, daily, db, memory, multi_agent, privacy, profile, rag, responder
 
 logger = logging.getLogger("app.router")
 ticket_logger = logging.getLogger("tickets")
@@ -109,7 +109,8 @@ def _run_agent_safe(question: str, username: str | None) -> str | None:
     而是走「转人工」兜底，保证客户问题不丢。
     """
     try:
-        return agent.run_agent(question, username)
+        # 中心 Agent 负责选择专业子 Agent，并统一记录协议和黑板轨迹。
+        return multi_agent.run(question, username)
     except Exception as e:  # noqa: BLE001
         logger.exception("Agent 调用失败，降级转人工：%s", e)
         return None
@@ -122,6 +123,13 @@ def _classify_safe(safe_text: str, history: list | None) -> dict | None:
     except Exception as e:  # noqa: BLE001
         logger.exception("分类器调用失败，降级转人工：%s", e)
         return None
+
+
+def _remember_and_schedule(username: str | None, user_text: str, reply: str) -> None:
+    """写入短期记忆，并异步投递实体画像提取任务。"""
+    memory.append(username, "user", user_text)
+    memory.append(username, "assistant", reply)
+    profile.schedule_extraction(username, user_text, reply)
 
 
 def process_ticket(ticket_text: str, ground_truth: str | None = None,
@@ -176,8 +184,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
             status="auto", reply=reply, reply_source="agent",
         )
         ticket_logger.info("日常问答（Agent）：%s", safe_text)
-        memory.append(username, "user", safe_text)
-        memory.append(username, "assistant", reply)
+        _remember_and_schedule(username, safe_text, reply)
         return record
 
     # 1. 响应缓存：完全重复的问题直接命中，跳过分类 + 大模型
@@ -191,22 +198,20 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
         record["device"] = device
         record["latency_ms"] = int((time.perf_counter() - started) * 1000)
         ticket_logger.info("缓存命中（%s）：%s", cache_key, safe_text)
-        memory.append(username, "user", safe_text)
-        memory.append(username, "assistant", record["reply"])
+        _remember_and_schedule(username, safe_text, record["reply"])
         return record
 
     # 2. 闲聊检测：问候、寒暄、自我介绍等，交给 DeepSeek 自然回复
     if is_smalltalk(safe_text):
         trace.append("smalltalk")
-        reply = responder.chat_reply(safe_text, history)
+        reply = responder.chat_reply(safe_text, history, profile.get_context_for_question(username, safe_text))
         record = mk(
             category="闲聊", confidence=1.0,
             reason="问候/寒暄，直接聊天回复",
             status="auto", reply=reply, reply_source="chat",
         )
         ticket_logger.info("闲聊回复：%s", safe_text)
-        memory.append(username, "user", safe_text)
-        memory.append(username, "assistant", reply)
+        _remember_and_schedule(username, safe_text, reply)
         cache.set(cache_key, record)  # 闲聊回复确定性较强，缓存加速
         return record
 
@@ -221,8 +226,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
             reply_source="escalate",
         )
         ticket_logger.info("升级人工（投诉/纠纷意图）：%s", safe_text)
-        memory.append(username, "user", safe_text)
-        memory.append(username, "assistant", record["reply"])
+        _remember_and_schedule(username, safe_text, record["reply"])
         return record
 
     # 4. RAG 优先：知识库命中就直接返回答案，不调大模型（毫秒级，性能关键）
@@ -236,8 +240,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
             rag_chunks=json.dumps([rag_hit], ensure_ascii=False),
         )
         ticket_logger.info("RAG 命中（距离 %.3f）：%s", rag_hit["distance"], safe_text)
-        memory.append(username, "user", safe_text)
-        memory.append(username, "assistant", rag_hit["answer"])
+        _remember_and_schedule(username, safe_text, rag_hit["answer"])
         return record
 
     # 5. 上下文承接：短消息且上一轮客服在追问 → 直接交给 Agent（带历史理解上下文），跳过孤立分类
@@ -254,8 +257,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
                 reply_source="escalate",
             )
             ticket_logger.info("升级人工（多轮追问降级）：%s", safe_text)
-            memory.append(username, "user", safe_text)
-            memory.append(username, "assistant", record["reply"])
+            _remember_and_schedule(username, safe_text, record["reply"])
             return record
         record = mk(
             category="多轮追问", confidence=1.0,
@@ -263,8 +265,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
             status="auto", reply=reply, reply_source="agent",
         )
         ticket_logger.info("多轮追问（Agent）：%s", safe_text)
-        memory.append(username, "user", safe_text)
-        memory.append(username, "assistant", reply)
+        _remember_and_schedule(username, safe_text, reply)
         return record
 
     # 6. 自助查询：查「我的订单/工单/物流/退款进度」直接交 Agent 调工具，
@@ -282,8 +283,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
                 reply_source="escalate",
             )
             ticket_logger.info("升级人工（自助查询降级）：%s", safe_text)
-            memory.append(username, "user", safe_text)
-            memory.append(username, "assistant", record["reply"])
+            _remember_and_schedule(username, safe_text, record["reply"])
             return record
         record = mk(
             category="自助查询", confidence=1.0,
@@ -291,8 +291,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
             status="auto", reply=reply, reply_source="agent",
         )
         ticket_logger.info("自助查询（Agent）：%s", safe_text)
-        memory.append(username, "user", safe_text)
-        memory.append(username, "assistant", reply)
+        _remember_and_schedule(username, safe_text, reply)
         return record
 
     # 7. 分类 + 情绪识别 + 多诉求判断（同一次 LLM 调用内完成）
@@ -307,8 +306,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
             reply_source="escalate",
         )
         ticket_logger.info("升级人工（分类器降级）：%s", safe_text)
-        memory.append(username, "user", safe_text)
-        memory.append(username, "assistant", record["reply"])
+        _remember_and_schedule(username, safe_text, record["reply"])
         return record
 
     category = result["category"]
@@ -379,8 +377,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
     # 只缓存确定性的模板回复；Agent/RAG 结果依赖实时订单/物流数据，不缓存
     if reply_source == "template":
         cache.set(cache_key, record)
-    memory.append(username, "user", safe_text)
-    memory.append(username, "assistant", reply)
+    _remember_and_schedule(username, safe_text, reply)
     return record
 
 

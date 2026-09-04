@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>我的服务档案</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260903-8" />
+</head>
+<body class="archive-body">
+  <main class="archive-page">
+    <header class="archive-header">
+      <a class="archive-back" href="/" aria-label="返回智能客服">← <span>返回咨询</span></a>
+      <div class="archive-heading"><span class="archive-kicker">SERVICE ARCHIVE</span><h1>我的服务档案</h1><p>记录帮助客服更准确服务你的信息，以及与你相关的订单和售后进度。</p></div>
+      <button class="btn btn-ghost" id="archive-logout-btn" type="button">退出登录</button>
+    </header>
+    <div class="archive-grid">
+      <section class="archive-section subject-section">
+        <div class="archive-section-head"><div><span class="archive-index">主体</span><h2>关于我</h2></div><span class="archive-note">可编辑的稳定信息</span></div>
+        <div id="subject-facts" class="subject-facts" aria-live="polite"><div class="archive-empty">正在加载档案...</div></div>
+      </section>
+      <section class="archive-section object-section">
+        <div class="archive-section-head"><div><span class="archive-index">客体</span><h2>我的业务记录</h2></div><span class="archive-note">实时状态，只读</span></div>
+        <div class="object-group"><div class="object-title"><h3>我的订单</h3><span id="order-count">0</span></div><div id="order-list" class="object-list"><div class="archive-empty">正在加载订单...</div></div></div>
+        <div class="object-group"><div class="object-title"><h3>我的售后工单</h3><span id="ticket-count">0</span></div><div id="ticket-list" class="object-list"><div class="archive-empty">正在加载工单...</div></div></div>
+      </section>
+    </div>
+  </main>
+  <script src="/static/profile.js?v=20260903-1"></script>
+</body>
+</html>

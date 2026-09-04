@@ -7,6 +7,7 @@
 """
 import json
 import logging
+import base64
 import re
 
 import requests
@@ -52,17 +53,20 @@ def _parse_json(text: str) -> dict:
 
 
 def _call_api(messages: list, json_mode: bool = False, max_tokens: int = 1024,
-              temperature: float = 0.1, tools: list | None = None) -> dict:
+              temperature: float = 0.1, tools: list | None = None,
+              model: str | None = None, base_url: str | None = None,
+              api_key: str | None = None) -> dict:
     """调用 DeepSeek 的底层方法，返回完整响应 dict。"""
-    if not config.Config.DEEPSEEK_API_KEY:
+    api_key = api_key or config.Config.DEEPSEEK_API_KEY
+    if not api_key:
         raise RuntimeError(
             "未检测到 API 密钥：请在项目根目录创建 .env 文件，并填写 "
             "DEEPSEEK_API_KEY=sk-... （可参考 .env.example）"
         )
 
-    url = config.Config.DEEPSEEK_BASE_URL.rstrip("/") + "/chat/completions"
+    url = (base_url or config.Config.DEEPSEEK_BASE_URL).rstrip("/") + "/chat/completions"
     payload = {
-        "model": config.Config.MODEL,
+        "model": model or config.Config.MODEL,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -73,11 +77,11 @@ def _call_api(messages: list, json_mode: bool = False, max_tokens: int = 1024,
     if tools:
         payload["tools"] = tools
 
-    logger.info("调用 DeepSeek（model=%s）", config.Config.MODEL)
+    logger.info("调用大模型（model=%s）", model or config.Config.MODEL)
     resp = _session.post(
         url,
         headers={
-            "Authorization": f"Bearer {config.Config.DEEPSEEK_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         json=payload,
@@ -89,6 +93,38 @@ def _call_api(messages: list, json_mode: bool = False, max_tokens: int = 1024,
             f"DeepSeek API 调用失败（HTTP {resp.status_code}）：{resp.text[:300]}"
         )
     return resp.json()
+
+
+def complete_vision(system: str, user: str, image_data: bytes,
+                    media_type: str, max_tokens: int = 768) -> str:
+    """调用兼容 OpenAI 视觉消息格式的模型识别图片。"""
+    if not config.Config.VISION_MODEL:
+        raise RuntimeError("未配置 VISION_MODEL，暂未启用图片识别")
+    image_base64 = base64.b64encode(image_data).decode("ascii")
+    messages = [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{media_type};base64,{image_base64}",
+                    },
+                },
+            ],
+        },
+    ]
+    data = _call_api(
+        messages,
+        max_tokens=max_tokens,
+        temperature=0.1,
+        model=config.Config.VISION_MODEL,
+        base_url=config.Config.VISION_BASE_URL,
+        api_key=config.Config.VISION_API_KEY,
+    )
+    return data["choices"][0]["message"].get("content") or ""
 
 
 def complete(system: str, user: str, json_mode: bool = False, max_tokens: int = 1024,

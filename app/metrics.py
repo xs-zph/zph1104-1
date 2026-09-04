@@ -100,3 +100,55 @@ def emotion_trend(days: int = 7) -> list[dict]:
         day = (today - timedelta(days=i)).strftime("%Y-%m-%d")
         result.append({"date": day, **per_day.get(day, {"负面": 0, "中性": 0, "正面": 0})})
     return result
+
+
+def manager_dashboard(days: int = 7) -> dict:
+    """经理视角的人工处理效果与客服负载数据。"""
+    tickets = db.list_all_tickets()
+    overview_data = overview()
+    human_statuses = {"escalated", "in_progress", "waiting_customer", "resolved", "closed"}
+    active_statuses = {"escalated", "in_progress", "waiting_customer"}
+    human_tickets = [ticket for ticket in tickets if ticket.get("status") in human_statuses]
+    resolved_tickets = [ticket for ticket in human_tickets if ticket.get("status") == "resolved"]
+    active_tickets = [ticket for ticket in human_tickets if ticket.get("status") in active_statuses]
+    breached = [ticket for ticket in human_tickets if ticket.get("sla_breached")]
+
+    by_agent: dict[str, dict] = {}
+    for ticket in human_tickets:
+        agent = ticket.get("assigned_to") or "未分配"
+        item = by_agent.setdefault(agent, {"agent": agent, "handled": 0, "resolved": 0, "open": 0})
+        item["handled"] += 1
+        if ticket.get("status") == "resolved":
+            item["resolved"] += 1
+        if ticket.get("status") in active_statuses:
+            item["open"] += 1
+
+    per_day = defaultdict(lambda: {"total": 0, "handoff": 0, "resolved": 0})
+    for ticket in tickets:
+        created = ticket.get("created_at")
+        if not created:
+            continue
+        day = str(created)[:10]
+        per_day[day]["total"] += 1
+        if ticket.get("status") in human_statuses:
+            per_day[day]["handoff"] += 1
+        if ticket.get("status") == "resolved":
+            per_day[day]["resolved"] += 1
+
+    today = datetime.now().date()
+    trend = []
+    for index in range(days - 1, -1, -1):
+        day = (today - timedelta(days=index)).strftime("%Y-%m-%d")
+        trend.append({"date": day, **per_day[day]})
+
+    return {
+        **overview_data,
+        "human_total": len(human_tickets),
+        "human_resolved": len(resolved_tickets),
+        "human_open": len(active_tickets),
+        "human_resolution_rate": round(len(resolved_tickets) / len(human_tickets), 4)
+        if human_tickets else None,
+        "sla_breached": len(breached),
+        "agent_performance": sorted(by_agent.values(), key=lambda item: (-item["handled"], item["agent"])),
+        "daily_workload": trend,
+    }

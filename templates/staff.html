@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>客服工作台 - AI 工单系统</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260904-1" />
+</head>
+<body class="admin-body staff-body">
+  <header class="navbar"><div class="navbar-inner">
+    <div class="brand"><span class="brand-icon">S</span><span class="brand-name">客服人工工作台</span></div>
+    <div class="navbar-right"><span class="navbar-user" id="staff-username">客服</span><button class="btn btn-light" id="logout-btn">退出登录</button></div>
+  </div></header>
+  <main class="container staff-container">
+    <section class="manager-intro staff-intro"><div><p class="eyebrow">人工服务</p><h1>转人工工单</h1><p>只处理需要人工介入的客户会话，回复后可继续跟进或结束工单。</p></div><button class="btn btn-ghost" id="refresh-btn">刷新工单</button></section>
+    <section class="panel admin-panel"><div class="panel-head"><div class="panel-title-row"><h2 class="panel-title">待处理工单</h2><span class="pending-count" id="escalation-count">加载中…</span></div></div><div id="escalation-list" class="escalation-list"><div class="empty">加载中…</div></div></section>
+  </main>
+  <script src="/static/staff.js?v=20260904-1"></script>
+</body>
+</html>

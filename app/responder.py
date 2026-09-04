@@ -12,10 +12,18 @@ from prompts import chat as chat_prompt
 logger = logging.getLogger("app.responder")
 
 
-def chat_reply(text: str, history: list | None = None) -> str:
+def chat_reply(text: str, history: list | None = None,
+               profile_context: str = "") -> str:
     """闲聊回复：调用大模型像真人客服一样打招呼、自我介绍、寒暄。"""
+    system = chat_prompt.SYSTEM_PROMPT
+    if profile_context:
+        system += (
+            "\n\n【用户实体画像卡片】\n"
+            "以下是用户明确确认或高置信度事实；自然交流时可以使用，但当前消息有新说法时以当前消息为准。\n"
+            + profile_context
+        )
     return llm.complete(
-        system=chat_prompt.SYSTEM_PROMPT,
+        system=system,
         user=text,
         max_tokens=256,
         temperature=0.7,

@@ -4,7 +4,7 @@ Pydantic 会自动校验数据，字段类型不对会直接报错，保证接�
 """
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TicketCreate(BaseModel):
@@ -19,6 +19,63 @@ class LoginRequest(BaseModel):
     """登录时传入的用户名和密码。"""
 
     username: str
+    password: str
+
+
+class PhoneCodeSendRequest(BaseModel):
+    """为密码校验成功但手机号未核验的登录挑战发送验证码。"""
+
+    challenge_id: str
+    phone: Optional[str] = None
+
+
+class PhoneCodeVerifyRequest(BaseModel):
+    """提交登录挑战的手机号验证码。"""
+
+    challenge_id: str
+    phone: str
+    code: str
+
+
+class RegisterRequest(BaseModel):
+    """注册普通客户账号；角色由服务端固定，不接受前端传入。"""
+
+    username: str
+    password: str
+    confirm_password: str
+
+
+class PasswordResetRequest(BaseModel):
+    """使用服务端配置的重置口令修改密码。"""
+
+    username: str
+    reset_code: str
+    password: str
+    confirm_password: str
+
+
+class ManagedUserCreate(BaseModel):
+    """管理员创建受管账号。"""
+
+    username: str
+    password: str
+    role: str = "agent"
+    permissions: list[str] = Field(default_factory=list)
+    phone: Optional[str] = None
+
+
+class ManagedUserUpdate(BaseModel):
+    """管理员调整账号状态、角色和账号级客服权限。"""
+
+    role: str
+    active: bool = True
+    permissions: list[str] = Field(default_factory=list)
+    phone: Optional[str] = None
+
+
+class ManagedPasswordReset(BaseModel):
+    """管理员直接重置指定账号密码。"""
+
     password: str
 
 
@@ -43,6 +100,18 @@ class ResolveRequest(BaseModel):
     save_to_kb: bool = True  # 是否将问答存入知识库供 AI 学习
 
 
+class TicketStatusRequest(BaseModel):
+    """坐席更新人工工单状态。"""
+
+    status: str
+
+
+class TicketAssignRequest(BaseModel):
+    """坐席接单或转派人工工单。"""
+
+    assigned_to: str
+
+
 class FeedbackRequest(BaseModel):
     """用户对某条 AI 回复的满意度评价。"""
 
@@ -54,6 +123,13 @@ class FeedbackTagRequest(BaseModel):
 
     tag: str                      # 分类错误 / 知识库无答案 / AI回答有误 / 安抚不合适
     note: Optional[str] = None    # 人工补充说明
+
+
+class ProfileFactUpdate(BaseModel):
+    """手工修正实体画像事实。"""
+
+    fact_value: str
+    confirmed: bool = True
 
 
 class OrderCreate(BaseModel):
@@ -80,11 +156,17 @@ class OrderUpdate(BaseModel):
 
 
 class LoginOut(BaseModel):
-    """登录成功后返回的令牌与用户信息。"""
+    """登录成功后返回的非敏感用户信息；会话令牌只通过 HttpOnly Cookie 下发。"""
 
-    token: str
     username: str
     role: str
+    status: str = "authenticated"
+    requires_phone_verification: bool = False
+    challenge_id: Optional[str] = None
+    phone_masked: Optional[str] = None
+    demo_code: Optional[str] = None
+    active: bool = True
+    permissions: list[str] = Field(default_factory=list)
 
 
 class TicketOut(BaseModel):

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>经理仪表盘 - AI 工单系统</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260904-2" />
+</head>
+<body class="admin-body">
+  <header class="navbar"><div class="navbar-inner">
+    <div class="brand"><span class="brand-icon">M</span><span class="brand-name">经理运营仪表盘</span></div>
+    <div class="navbar-right"><span class="navbar-user" id="manager-username">经理</span><button class="btn btn-light" id="logout-btn">退出登录</button></div>
+  </div></header>
+  <main class="container manager-container">
+    <section class="manager-intro"><div><p class="eyebrow">运营总览</p><h1>人工服务效果</h1><p>查看 AI 分流、人工处理、SLA 和客服负载。</p></div><button class="btn btn-ghost" id="refresh-dashboard-btn">刷新数据</button></section>
+    <section class="manager-metrics" aria-label="核心指标">
+      <div class="metric-card"><div class="metric-label">工单总数</div><div class="metric-value" id="m-total">-</div></div>
+      <div class="metric-card"><div class="metric-label">AI 自动处理率</div><div class="metric-value" id="m-auto-rate">-</div></div>
+      <div class="metric-card"><div class="metric-label">转人工总量</div><div class="metric-value" id="m-human-total">-</div></div>
+      <div class="metric-card"><div class="metric-label">人工解决率</div><div class="metric-value" id="m-human-rate">-</div></div>
+      <div class="metric-card"><div class="metric-label">SLA 超时</div><div class="metric-value" id="m-sla">-</div></div>
+      <div class="metric-card"><div class="metric-label">平均处理耗时</div><div class="metric-value" id="m-latency">-</div></div>
+    </section>
+    <section class="manager-grid">
+      <div class="panel manager-panel"><div class="panel-head"><h2 class="panel-title">每日处理趋势</h2><span class="panel-tip">近 7 天</span></div><div id="daily-workload" class="bar-chart" aria-label="每日处理趋势"></div><div class="chart-legend"><span><i class="chart-dot total"></i>全部</span><span><i class="chart-dot handoff"></i>转人工</span><span><i class="chart-dot resolved"></i>已解决</span></div></div>
+      <div class="panel manager-panel"><div class="panel-head"><h2 class="panel-title">客服处理效果</h2><span class="panel-tip">按坐席</span></div><div id="agent-performance" class="agent-performance"></div></div>
+    </section>
+    <section class="panel manager-panel"><div class="panel-head"><div><h2 class="panel-title">运营统计</h2><p class="panel-desc">用于观察高频问题、客户情绪和反馈标签。</p></div></div><div class="manager-stats" id="manager-stats"><div class="empty">加载中...</div></div></section>
+  </main>
+  <script src="/static/manager.js?v=20260904-1"></script>
+</body>
+</html>

@@ -2,11 +2,15 @@
 # 安装方式：pip install -r requirements.txt
 
 fastapi>=0.110,<1.0        # Web 框架（提供 API + 网页界面）
+python-multipart>=0.0.9    # FastAPI multipart 图片上传
 uvicorn[standard]>=0.29     # ASGI 服务器，运行 FastAPI 应用
 pydantic>=2.6               # 数据校验（FastAPI 依赖它）
 python-dotenv>=1.0          # 读取 .env 配置文件
 requests>=2.31              # 调用 DeepSeek API（OpenAI 兼容接口）
+bcrypt>=4.0                 # 密码哈希
 pymysql>=1.1                # MySQL 数据库驱动
 chromadb>=0.4.24            # 向量数据库（RAG 知识库）
 numpy>=1.24                 # 向量化计算（本地哈希向量化）
 sentence-transformers>=2.6  # 中文语义向量模型（真正的语义检索，bge-small-zh）
+mcp>=1.9,<2.0              # MCP Python SDK（本地 stdio 业务工具）
+redis>=5.0                 # Redis 会话与跨进程事件（可选运行时）

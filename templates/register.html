@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>注册账号 - AI客服工单自动化系统</title>
+    <link rel="stylesheet" href="/static/style.css?v=20260903">
+</head>
+<body class="login-body">
+    <main class="login-card">
+        <div class="login-logo">
+            <div class="login-logo-icon">AI</div>
+            <h1>注册账号</h1>
+            <p class="login-sub">创建客户账号，开始使用智能客服</p>
+        </div>
+
+        <form id="register-form" class="login-form" autocomplete="off">
+            <div class="field">
+                <label for="username">用户名</label>
+                <input type="text" id="username" placeholder="3-32 位字母、数字或下划线" autocomplete="username" required>
+            </div>
+            <div class="field">
+                <label for="password">密码</label>
+                <input type="password" id="password" placeholder="至少 8 位，包含字母和数字" autocomplete="new-password" required>
+            </div>
+            <div class="field">
+                <label for="confirm-password">确认密码</label>
+                <input type="password" id="confirm-password" placeholder="再次输入密码" autocomplete="new-password" required>
+            </div>
+            <div class="login-error" id="register-error" hidden></div>
+            <button type="submit" class="btn btn-primary btn-block" id="register-btn">注册并进入</button>
+        </form>
+
+        <div class="login-back">已有账号？<a href="/login">返回登录</a></div>
+    </main>
+
+    <script src="/static/register.js?v=20260903"></script>
+</body>
+</html>

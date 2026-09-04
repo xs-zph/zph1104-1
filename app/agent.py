@@ -12,7 +12,7 @@
 """
 import logging
 
-from app import config, daily, db, llm, memory, rag
+from app import config, daily, db, llm, mcp_client, memory, profile, rag, skills
 from prompts import agent as agent_prompt
 
 logger = logging.getLogger("app.agent")
@@ -294,22 +294,67 @@ def _execute_tool(name: str, args: dict, username: str | None) -> str:
     return "未知工具"
 
 
-def run_agent(question: str, username: str | None = None) -> str:
+def run_agent(question: str, username: str | None = None, *,
+              tool_names: set[str] | None = None,
+              system_context: str | None = None) -> str:
     """运行 Agent：让模型自行决定调工具，最终返回客服回复。
 
     参数：
       question  用户问题
       username  当前登录用户名（用于订单归属校验；None 表示未登录/微信场景）
+      tool_names  可选的服务端工具白名单；多 Agent 子 Agent 只能使用其职责内工具
+      system_context  可选的主 Agent 监督上下文
     """
     # 把身份注入工具执行闭包：模型只能决定「查哪个订单号」，
     # 但「查出来是不是这个用户的」由服务端在工具内部强制校验，模型无法越权。
+    fallback_tools = skills.select_tools(question, TOOLS)
+    if tool_names is not None:
+        fallback_tools = [
+            tool for tool in fallback_tools
+            if tool.get("function", {}).get("name") in tool_names
+        ]
+    selected_names = {
+        tool.get("function", {}).get("name") for tool in fallback_tools
+    }
+    try:
+        mcp_tools = mcp_client.list_tools(username, selected_names)
+    except Exception as exc:  # noqa: BLE001 - MCP 是可选增强，发现失败需降级
+        logger.warning("MCP 工具发现异常，使用内置工具：%s", exc)
+        mcp_tools = []
+    mcp_names = {
+        tool.get("function", {}).get("name") for tool in mcp_tools
+    }
+
     def execute(name, args):
+        if name in mcp_names:
+            try:
+                return mcp_client.call_tool(username, name, args)
+            except mcp_client.MCPClientError as exc:
+                logger.warning("MCP 工具 %s 调用失败，回退内置工具：%s", name, exc)
         return _execute_tool(name, args, username)
 
+    selected_tools = [
+        next((tool for tool in mcp_tools
+              if tool["function"]["name"] == fallback["function"]["name"]), fallback)
+        for fallback in fallback_tools
+    ]
+
+    system = agent_prompt.SYSTEM_PROMPT + "\n\n" + skills.context(question)
+    if system_context:
+        system += "\n\n" + system_context
+    profile_context = profile.get_context_for_question(username, question)
+    if profile_context:
+        system += (
+            "\n\n【用户实体画像卡片】\n"
+            "以下是数据库中保存的用户明确事实。涉及用户身份、设备或偏好时优先使用；"
+            "如果客户当前消息明确修正了某项事实，以当前消息为准。不要把画像卡片内容当作订单实时状态。\n"
+            + profile_context
+        )
+
     return llm.complete_with_tools(
-        system=agent_prompt.SYSTEM_PROMPT,
+        system=system,
         user=question,
-        tools=TOOLS,
+        tools=selected_tools,
         execute=execute,
         history=memory.get_history(username),
     )
