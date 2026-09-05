@@ -8,11 +8,16 @@
 import json
 import logging
 import base64
+import queue
 import re
+import threading
+import time
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 
 import requests
 
 from app import config
+from app.config import Config
 
 logger = logging.getLogger("app.llm")
 
@@ -21,6 +26,96 @@ MAX_USER_CHARS = 4000
 
 # 复用同一个 HTTP 会话（keep-alive），避免每次调用都重新 TCP + TLS 握手
 _session = requests.Session()
+
+
+class QueueFullError(Exception):
+    """内部执行队列已满。"""
+
+
+class LLMOverloadedError(RuntimeError):
+    """大模型服务当前过载，调用方应执行业务降级。"""
+
+
+class LLMTimeoutError(RuntimeError):
+    """大模型调用超过总时限。"""
+
+
+class LLMCircuitOpenError(RuntimeError):
+    """大模型连续失败，熔断器暂时阻止新请求。"""
+
+
+class _BoundedExecutor:
+    """带固定 worker 和有界队列的轻量任务执行器。"""
+
+    def __init__(self, workers: int, max_queue: int):
+        self._tasks = queue.Queue(maxsize=max(1, max_queue))
+        self._threads = []
+        for index in range(max(1, workers)):
+            thread = threading.Thread(
+                target=self._run,
+                name=f"llm-worker-{index + 1}",
+                daemon=True,
+            )
+            thread.start()
+            self._threads.append(thread)
+
+    def submit(self, fn, *args, **kwargs) -> Future:
+        future = Future()
+        try:
+            self._tasks.put_nowait((future, fn, args, kwargs))
+        except queue.Full as exc:
+            raise QueueFullError from exc
+        return future
+
+    def _run(self):
+        while True:
+            future, fn, args, kwargs = self._tasks.get()
+            try:
+                if future.set_running_or_notify_cancel():
+                    try:
+                        future.set_result(fn(*args, **kwargs))
+                    except BaseException as exc:  # noqa: BLE001
+                        future.set_exception(exc)
+            finally:
+                self._tasks.task_done()
+
+
+class _CircuitBreaker:
+    """按瞬时上游失败次数熔断，成功后自动恢复。"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._failures = 0
+        self._opened_at = 0.0
+        self._half_open = False
+
+    def before_call(self):
+        now = time.monotonic()
+        with self._lock:
+            if not self._opened_at:
+                return
+            if now - self._opened_at < Config.LLM_CIRCUIT_RECOVERY_SECONDS:
+                raise LLMCircuitOpenError("大模型服务暂时不可用，请稍后重试")
+            if self._half_open:
+                raise LLMCircuitOpenError("大模型服务正在恢复，请稍后重试")
+            self._half_open = True
+
+    def success(self):
+        with self._lock:
+            self._failures = 0
+            self._opened_at = 0.0
+            self._half_open = False
+
+    def failure(self):
+        with self._lock:
+            self._failures += 1
+            self._half_open = False
+            if self._failures >= max(1, Config.LLM_CIRCUIT_FAILURE_THRESHOLD):
+                self._opened_at = time.monotonic()
+
+
+_executor = _BoundedExecutor(Config.LLM_MAX_WORKERS, Config.LLM_QUEUE_SIZE)
+_circuit = _CircuitBreaker()
 
 
 def _truncate(text: str, max_chars: int = MAX_USER_CHARS) -> str:
@@ -52,11 +147,72 @@ def _parse_json(text: str) -> dict:
     raise ValueError(f"无法解析模型返回的 JSON：{text[:200]}")
 
 
+def _post_once(
+    url: str, payload: dict, api_key: str, timeout_seconds: float,
+) -> dict:
+    """执行一次上游请求；只把可重试的错误标记为瞬时错误。"""
+    try:
+        resp = _session.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=max(0.1, timeout_seconds),
+        )
+    except requests.RequestException as exc:
+        raise _UpstreamError(f"DeepSeek API 网络错误：{exc}", transient=True) from exc
+
+    if resp.status_code != 200:
+        transient = resp.status_code == 408 or resp.status_code == 429 or resp.status_code >= 500
+        raise _UpstreamError(
+            f"DeepSeek API 调用失败（HTTP {resp.status_code}）：{resp.text[:300]}",
+            transient=transient,
+        )
+    return resp.json()
+
+
+class _UpstreamError(RuntimeError):
+    def __init__(self, message: str, transient: bool):
+        super().__init__(message)
+        self.transient = transient
+
+
+def _perform_api_call(url: str, payload: dict, api_key: str) -> dict:
+    """在 worker 中执行请求、重试和熔断状态更新。"""
+    _circuit.before_call()
+    retries = max(0, Config.LLM_MAX_RETRIES)
+    deadline = time.monotonic() + max(0.1, Config.LLM_TOTAL_TIMEOUT_SECONDS)
+    for attempt in range(retries + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _circuit.failure()
+            raise _UpstreamError("大模型任务超过总时限", transient=True)
+        try:
+            result = _post_once(
+                url,
+                payload,
+                api_key,
+                min(Config.LLM_REQUEST_TIMEOUT_SECONDS, remaining),
+            )
+            _circuit.success()
+            return result
+        except _UpstreamError as exc:
+            if not exc.transient or attempt >= retries:
+                if exc.transient:
+                    _circuit.failure()
+                raise
+            delay = Config.LLM_RETRY_BACKOFF_SECONDS * (2 ** attempt)
+            if delay > 0:
+                time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+
+
 def _call_api(messages: list, json_mode: bool = False, max_tokens: int = 1024,
               temperature: float = 0.1, tools: list | None = None,
               model: str | None = None, base_url: str | None = None,
               api_key: str | None = None) -> dict:
-    """调用 DeepSeek 的底层方法，返回完整响应 dict。"""
+    """将一次大模型调用提交到有界队列，并返回完整响应 dict。"""
     api_key = api_key or config.Config.DEEPSEEK_API_KEY
     if not api_key:
         raise RuntimeError(
@@ -77,22 +233,23 @@ def _call_api(messages: list, json_mode: bool = False, max_tokens: int = 1024,
     if tools:
         payload["tools"] = tools
 
-    logger.info("调用大模型（model=%s）", model or config.Config.MODEL)
-    resp = _session.post(
-        url,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=120,
-    )
+    logger.info("提交大模型任务（model=%s）", model or config.Config.MODEL)
+    try:
+        future = _executor.submit(_perform_api_call, url, payload, api_key)
+    except QueueFullError as exc:
+        logger.warning("大模型任务队列已满，执行业务降级")
+        raise LLMOverloadedError("当前咨询量较大，已为您转接人工客服") from exc
+    try:
+        return future.result(timeout=max(0.1, Config.LLM_TOTAL_TIMEOUT_SECONDS))
+    except FutureTimeoutError as exc:
+        logger.warning("大模型任务超过总时限，执行业务降级")
+        future.cancel()
+        raise LLMTimeoutError("大模型响应超时，请转人工处理") from exc
 
-    if resp.status_code != 200:
-        raise RuntimeError(
-            f"DeepSeek API 调用失败（HTTP {resp.status_code}）：{resp.text[:300]}"
-        )
-    return resp.json()
+
+def reset_runtime_state() -> None:
+    """重置熔断状态，供测试和进程内运维使用。"""
+    _circuit.success()
 
 
 def complete_vision(system: str, user: str, image_data: bytes,

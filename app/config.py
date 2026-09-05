@@ -104,6 +104,16 @@ class Config:
     )
     MCP_TIMEOUT_SECONDS = float(os.getenv("MCP_TIMEOUT_SECONDS", "8"))
 
+    # 大模型调用治理：有界队列避免并发请求无限堆积，失败时由路由层转人工。
+    LLM_MAX_WORKERS = int(os.getenv("LLM_MAX_WORKERS", "4"))
+    LLM_QUEUE_SIZE = int(os.getenv("LLM_QUEUE_SIZE", "32"))
+    LLM_REQUEST_TIMEOUT_SECONDS = float(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "30"))
+    LLM_TOTAL_TIMEOUT_SECONDS = float(os.getenv("LLM_TOTAL_TIMEOUT_SECONDS", "45"))
+    LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+    LLM_RETRY_BACKOFF_SECONDS = float(os.getenv("LLM_RETRY_BACKOFF_SECONDS", "0.5"))
+    LLM_CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("LLM_CIRCUIT_FAILURE_THRESHOLD", "5"))
+    LLM_CIRCUIT_RECOVERY_SECONDS = float(os.getenv("LLM_CIRCUIT_RECOVERY_SECONDS", "30"))
+
     # 开发/演示环境自动准备测试账号和订单；生产环境可设为 false。
     DEMO_DATA_ENABLED = os.getenv("DEMO_DATA_ENABLED", "true").lower() in {
         "1", "true", "yes", "on"

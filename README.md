@@ -30,6 +30,7 @@
 - **中心式多 Agent**：`main_agent` 统一调度、监管和裁决专业子 Agent；子 Agent 不能互相通信，只能通过结构化 JSON 向主 Agent 汇报
 - **共享黑板**：主 Agent 写入工单级审计黑板，所有子 Agent 按任务读取，支持协作上下文留痕和结果重放
 - **多 Agent 运行审计**：系统管理员可在后台查看脱敏后的任务摘要、子 Agent、状态和 JSON 事件轨迹
+- **大模型并发治理**：统一使用有界任务队列和固定 worker，支持请求超时、瞬时错误重试、熔断保护；队列过载或上游不可用时自动转人工
 
 ## 🏗️ 系统架构
 
@@ -206,6 +207,12 @@ python scripts/seed_demo_data.py
 跨应用进程广播；未配置时仍可使用单机内存模式。数据库默认使用有界连接池，
 可通过 `DB_POOL_SIZE` 和 `DB_POOL_TIMEOUT_SECONDS` 调整。每个 HTTP 响应都会返回
 `X-Request-ID`，可用来关联应用日志和前端报错。
+
+大模型调用默认使用 4 个 worker 和 32 个排队位。`LLM_REQUEST_TIMEOUT_SECONDS`
+控制单次上游请求时限，`LLM_TOTAL_TIMEOUT_SECONDS` 控制一次任务总时限；408、429
+和 5xx 等瞬时错误会按 `LLM_MAX_RETRIES` 做指数退避重试，连续失败达到
+`LLM_CIRCUIT_FAILURE_THRESHOLD` 后暂时熔断。队列满、超时或熔断时，现有路由会
+自动将工单转人工，不向客户返回 500。
 
 ## 🧪 端到端演示（可选）
 
