@@ -91,8 +91,8 @@ class ProfileMemoryTests(unittest.TestCase):
 
     def test_context_includes_subject_and_matching_order_only(self):
         facts = [{
-            "entity_type": "device", "fact_key": "preferred_device",
-            "fact_value": "无线蓝牙耳机",
+            "entity_type": "person", "fact_key": "name",
+            "fact_value": "小王",
         }]
         orders = [
             {"order_id": "A20240812001", "product": "无线蓝牙耳机", "status": "已发货", "logistics": "运输中"},
@@ -104,8 +104,44 @@ class ProfileMemoryTests(unittest.TestCase):
             context = profile.get_context_for_question("user", "订单 A20240812001 的物流到哪了？")
 
         self.assertIn("【主体事实】", context)
+        self.assertIn("小王", context)
         self.assertIn("A20240812001", context)
         self.assertNotIn("A20240815002", context)
+        tickets.assert_not_called()
+
+    def test_order_scene_excludes_unrelated_subject_preferences(self):
+        facts = [
+            {"entity_type": "device", "fact_key": "preferred_device", "fact_value": "无线耳机"},
+            {"entity_type": "preference", "fact_key": "favorite_category", "fact_value": "厨房小家电"},
+            {"entity_type": "after_sale", "fact_key": "issue", "fact_value": "耳机左耳无声"},
+        ]
+        orders = [{"order_id": "A20240812001", "product": "无线耳机", "status": "已发货"}]
+        with patch.object(profile.db, "list_profile_facts", return_value=facts), \
+             patch.object(profile.db, "list_orders_for_user", return_value=orders), \
+             patch.object(profile.db, "list_tickets_for_user") as tickets:
+            context = profile.get_context_for_question("user", "订单 A20240812001 的物流到哪了？")
+
+        self.assertNotIn("无线耳机", context.split("【当前相关客体：订单】")[0])
+        self.assertNotIn("厨房小家电", context)
+        self.assertNotIn("耳机左耳无声", context)
+        self.assertIn("A20240812001", context)
+        tickets.assert_not_called()
+
+    def test_device_scene_keeps_relevant_subject_and_excludes_after_sale_fact(self):
+        facts = [
+            {"entity_type": "device", "fact_key": "preferred_device", "fact_value": "无线耳机"},
+            {"entity_type": "preference", "fact_key": "usage_preference", "fact_value": "通勤时使用"},
+            {"entity_type": "after_sale", "fact_key": "issue", "fact_value": "耳机左耳无声"},
+        ]
+        with patch.object(profile.db, "list_profile_facts", return_value=facts), \
+             patch.object(profile.db, "list_orders_for_user") as orders, \
+             patch.object(profile.db, "list_tickets_for_user") as tickets:
+            context = profile.get_context_for_question("user", "我平时用什么设备？")
+
+        self.assertIn("无线耳机", context)
+        self.assertIn("通勤时使用", context)
+        self.assertNotIn("耳机左耳无声", context)
+        orders.assert_not_called()
         tickets.assert_not_called()
 
     def test_smalltalk_context_does_not_include_business_objects(self):

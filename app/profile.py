@@ -26,10 +26,62 @@ _MAX_EVIDENCE_CHARS = 500
 _USER_LOCKS = defaultdict(Lock)
 _ORDER_ID_PATTERN = re.compile(r"\b[A-Za-z]\d{3,}\b")
 
+_SUBJECT_KEYS_BY_SCENE = {
+    # 订单/物流的权威信息来自订单表，主体只保留称呼，避免偏好和旧售后故障污染查询。
+    "order": {("person", "name")},
+    "ticket": {
+        ("person", "name"), ("device", "preferred_device"),
+        ("preference", "usage_preference"), ("after_sale", "issue"),
+    },
+    "device": {
+        ("person", "name"), ("device", "preferred_device"),
+        ("preference", "usage_preference"),
+    },
+    "product": {
+        ("person", "name"), ("device", "preferred_device"),
+        ("preference", "favorite_category"), ("preference", "usage_preference"),
+    },
+}
 
-def _subject_context(username: str) -> str:
-    """返回主体事实；保留旧入口，方便闲聊和现有调用方复用。"""
-    return get_context(username)
+
+def _subject_context(username: str, question: str | None = None) -> str:
+    """返回主体事实；传入问题时只保留当前场景相关的事实。"""
+    if question is None:
+        return get_context(username)
+    return _get_scene_subject_context(username, question)
+
+
+def _subject_scene(question: str) -> str | None:
+    """根据问题粗粒度确定主体画像范围，客体仍由业务表单独召回。"""
+    text = (question or "").strip()
+    if any(word in text for word in ("订单", "快递", "物流", "运单", "发货", "退款")):
+        return "order"
+    if any(word in text for word in ("售后", "维修", "故障", "工单", "报修")):
+        return "ticket"
+    if any(word in text for word in ("设备", "手机", "电脑", "耳机", "平板")):
+        return "device"
+    if any(word in text for word in ("商品", "产品", "保修", "参数", "喜欢", "偏好")):
+        return "product"
+    return None
+
+
+def _get_scene_subject_context(username: str, question: str) -> str:
+    """按场景筛选主体事实，保证稳定事实不会遮蔽当前业务对象。"""
+    if not username:
+        return ""
+    try:
+        facts = db.list_profile_facts(username)
+        scene = _subject_scene(question)
+        allowed = _SUBJECT_KEYS_BY_SCENE.get(scene)
+        if allowed is not None:
+            facts = [
+                fact for fact in facts
+                if (fact.get("entity_type"), fact.get("fact_key")) in allowed
+            ]
+        return _format_facts(facts)
+    except Exception:  # noqa: BLE001
+        logger.exception("按场景读取主体画像失败：%s", username)
+        return ""
 
 
 def _format_order(order: dict) -> str:
@@ -60,11 +112,11 @@ def get_context_for_question(username: str | None, question: str) -> str:
         return ""
     try:
         sections = []
-        subject = _subject_context(username)
+        text = (question or "").strip()
+        subject = _subject_context(username, text)
         if subject:
             sections.append("【主体事实】\n" + subject)
 
-        text = (question or "").strip()
         explicit_ids = {match.upper() for match in _ORDER_ID_PATTERN.findall(text)}
         asks_order = any(word in text for word in ("订单", "快递", "物流", "运单", "发货", "退款"))
         asks_ticket = any(word in text for word in ("售后", "维修", "故障", "工单", "报修"))
