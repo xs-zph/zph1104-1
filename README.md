@@ -6,6 +6,16 @@
 
 > 技术栈：Python + FastAPI + DeepSeek API + MySQL + ChromaDB（RAG 检索增强）+ MCP
 
+## 页面预览
+
+| 登录入口 | 客户咨询 |
+| --- | --- |
+| ![小鹏登录页](images/01-login.png) | ![客户聊天页](images/02-customer.png) |
+
+| 管理员账号管理 | 客服人工工作台 | 经理运营仪表盘 |
+| --- | --- | --- |
+| ![管理员后台](images/03-admin.png) | ![客服工作台](images/04-staff.png) | ![经理仪表盘](images/05-manager.png) |
+
 ## ✨ 功能特性
 
 - **登录鉴权**：账号密码登录 + 后端 HttpOnly Cookie 会话，区分「系统管理员」「经理」「客服」「客户」四种角色
@@ -103,7 +113,7 @@ ai_ticket_system/
 │   ├── style.css
 │   ├── login.js / register.js / forgot_password.js / app.js / admin.js / manager.js
 ├── data/                   # 数据文件
-│   ├── faq.md              # FAQ 知识库（RAG 种子数据，23 条）
+│   ├── faq.md              # FAQ 知识库（RAG 种子数据，28 条）
 │   └── chroma/             # 向量数据库（运行生成，已 gitignore）
 ├── scripts/                # 独立脚本
 │   ├── seed_faq.py         # 初始化知识库
@@ -111,6 +121,8 @@ ai_ticket_system/
 │   ├── run_demo.py         # 端到端演示
 │   ├── analyze.py          # 批量统计
 │   └── review_errors.py    # 错例复盘
+├── images/                 # README 页面截图
+├── tools/                  # 本机专用隧道脚本
 ├── logs/                   # 系统日志（运行生成，已 gitignore）
 ├── mcp_servers/            # 本地 MCP Server（stdio）
 │   └── business_server.py  # 订单 / 物流 / 退款只读工具
