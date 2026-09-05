@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>客服工作台 - AI 工单系统</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260904-1" />
+  <link rel="stylesheet" href="/static/style.css?v=20260905-board" />
 </head>
 <body class="admin-body staff-body">
   <header class="navbar"><div class="navbar-inner">
@@ -13,8 +13,21 @@
   </div></header>
   <main class="container staff-container">
     <section class="manager-intro staff-intro"><div><p class="eyebrow">人工服务</p><h1>转人工工单</h1><p>只处理需要人工介入的客户会话，回复后可继续跟进或结束工单。</p></div><button class="btn btn-ghost" id="refresh-btn">刷新工单</button></section>
-    <section class="panel admin-panel"><div class="panel-head"><div class="panel-title-row"><h2 class="panel-title">待处理工单</h2><span class="pending-count" id="escalation-count">加载中…</span></div></div><div id="escalation-list" class="escalation-list"><div class="empty">加载中…</div></div></section>
+    <section class="panel admin-panel staff-board-panel">
+      <div class="panel-head">
+        <div class="panel-title-row"><h2 class="panel-title">人工工单看板</h2><span class="pending-count" id="escalation-count">加载中…</span></div>
+        <span class="panel-tip" id="board-updated">等待同步</span>
+      </div>
+      <div class="board-toolbar" aria-label="工单筛选">
+        <label class="board-search"><span class="sr-only">搜索工单</span><input type="search" id="staff-search" placeholder="搜索客户、工单内容或工单号" autocomplete="off" /></label>
+        <label class="board-filter"><span>优先级</span><select id="staff-priority-filter"><option value="">全部优先级</option><option value="urgent">紧急</option><option value="high">高</option><option value="normal">普通</option><option value="low">低</option></select></label>
+        <label class="board-filter"><span>SLA</span><select id="staff-sla-filter"><option value="">全部 SLA</option><option value="overdue">已超时</option><option value="active">未超时</option></select></label>
+        <label class="board-filter"><span>处理人</span><select id="staff-assignee-filter"><option value="">全部处理人</option><option value="unassigned">未分配</option></select></label>
+        <label class="board-toggle"><input type="checkbox" id="staff-active-only" /><span>仅看未结束</span></label>
+      </div>
+      <div id="escalation-board" class="escalation-board"><div class="empty">加载中…</div></div>
+    </section>
   </main>
-  <script src="/static/staff.js?v=20260904-1"></script>
+  <script src="/static/staff.js?v=20260905-board"></script>
 </body>
 </html>

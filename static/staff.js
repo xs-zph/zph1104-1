@@ -2,6 +2,13 @@
 let currentUser = "客服";
 let permissions = new Set();
 let agents = [];
+let tickets = [];
+const BOARD_COLUMNS = [
+  { key: "escalated", label: "待接单", hint: "等待坐席接手" },
+  { key: "in_progress", label: "处理中", hint: "正在跟进客户" },
+  { key: "waiting_customer", label: "等待客户", hint: "等待客户补充" },
+  { key: "done", label: "已完成", hint: "已解决或已关闭" },
+];
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
 async function api(path, options = {}) {
@@ -25,12 +32,55 @@ function renderTicket(ticket) {
   const answer = active && mine && permissions.has("ticket.reply") ? `<div class="human-answer-box"><textarea class="human-answer" data-answer="${ticket.id}" placeholder="请输入人工回复…"></textarea><label class="kb-check"><input type="checkbox" data-savekb="${ticket.id}" checked> 将回答存入知识库</label><div class="escalation-actions">${permissions.has("ticket.reply") ? `<button class="btn btn-ghost btn-sm" data-action="reply" data-id="${ticket.id}">发送并继续</button>` : ""}${permissions.has("ticket.resolve") ? `<button class="btn btn-primary" data-action="resolve" data-id="${ticket.id}">回复并结束</button>` : ""}</div></div>` : ticket.assigned_to && !mine ? `<div class="assignment-notice">该工单正在由「${escapeHtml(ticket.assigned_to)}」处理</div>` : "";
   return `<article class="escalation-card ${active ? "" : "resolved"} ${overdue ? "overdue" : ""}"><div class="escalation-top"><span class="tag ${ticket.status}">${status}</span>${overdue ? '<span class="tag overdue">SLA 已超时</span>' : ""}<span class="tag">${escapeHtml(ticket.category || "未知")}</span></div>${renderThread(ticket)}<div class="workflow-actions">${claim}${workflow}</div>${answer}${transfer}<div class="escalation-meta"><span>处理人：${escapeHtml(ticket.assigned_to || "未分配")}</span><span>SLA：${escapeHtml(ticket.sla_due_at || "未设置")}</span><span>#${ticket.id}</span></div></article>`;
 }
-let tickets = [];
+
+function ticketIsActive(ticket) { return ["escalated", "in_progress", "waiting_customer"].includes(ticket.status); }
+function ticketIsOverdue(ticket) {
+  return ticketIsActive(ticket) && (ticket.sla_breached === true || ticket.sla_breached === 1 || (ticket.sla_due_at && new Date(String(ticket.sla_due_at).replace(" ", "T")) < new Date()));
+}
+function ticketColumn(ticket) { return ticketIsActive(ticket) ? ticket.status : "done"; }
+function ticketSearchText(ticket) {
+  return [ticket.id, ticket.username, ticket.ticket_text, ticket.category, ticket.assigned_to, ...(ticket.messages || []).map((message) => message.content)].join(" ").toLowerCase();
+}
+function filteredTickets() {
+  const search = $("staff-search").value.trim().toLowerCase();
+  const priority = $("staff-priority-filter").value;
+  const sla = $("staff-sla-filter").value;
+  const assignee = $("staff-assignee-filter").value;
+  const activeOnly = $("staff-active-only").checked;
+  return tickets.filter((ticket) => {
+    if (activeOnly && !ticketIsActive(ticket)) return false;
+    if (search && !ticketSearchText(ticket).includes(search)) return false;
+    if (priority && (ticket.priority || "normal") !== priority) return false;
+    if (sla === "overdue" && !ticketIsOverdue(ticket)) return false;
+    if (sla === "active" && ticketIsOverdue(ticket)) return false;
+    if (assignee === "unassigned" && ticket.assigned_to) return false;
+    if (assignee && assignee !== "unassigned" && ticket.assigned_to !== assignee) return false;
+    return true;
+  });
+}
+function renderAssigneeFilter() {
+  const select = $("staff-assignee-filter");
+  const selected = select.value;
+  const names = [...new Set([...agents.map((agent) => agent.username), ...tickets.map((ticket) => ticket.assigned_to).filter(Boolean)])].sort();
+  select.innerHTML = '<option value="">全部处理人</option><option value="unassigned">未分配</option>' + names.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+  if (["", "unassigned", ...names].includes(selected)) select.value = selected;
+}
+function renderBoard() {
+  const visible = filteredTickets();
+  const counts = BOARD_COLUMNS.reduce((result, column) => ({ ...result, [column.key]: visible.filter((ticket) => ticketColumn(ticket) === column.key).length }), {});
+  $("escalation-board").innerHTML = BOARD_COLUMNS.map((column) => {
+    const columnTickets = visible.filter((ticket) => ticketColumn(ticket) === column.key);
+    return `<section class="board-column board-${column.key}"><div class="board-column-head"><div><h3>${column.label}</h3><span>${column.hint}</span></div><b>${counts[column.key]}</b></div><div class="board-column-list">${columnTickets.length ? columnTickets.map(renderTicket).join("") : '<div class="board-empty">暂无工单</div>'}</div></section>`;
+  }).join("");
+  bindActions();
+  const active = tickets.filter(ticketIsActive).length;
+  $("escalation-count").textContent = `${active} 条未结束 · ${visible.length} 条显示中`;
+}
 async function refreshTickets() {
-  try { tickets = await api("/api/escalations"); const pending = tickets.filter((ticket) => ["escalated", "in_progress", "waiting_customer"].includes(ticket.status)); $("escalation-count").textContent = `${pending.length} 条待处理`; $("escalation-list").innerHTML = tickets.length ? tickets.map(renderTicket).join("") : '<div class="empty">暂无转人工工单</div>'; bindActions(); } catch (error) { $("escalation-list").innerHTML = `<div class="empty">加载失败：${escapeHtml(error.message)}</div>`; }
+  try { tickets = await api("/api/escalations"); renderAssigneeFilter(); renderBoard(); $("board-updated").textContent = `刚刚更新 · ${tickets.length} 条工单`; } catch (error) { $("escalation-board").innerHTML = `<div class="empty">加载失败：${escapeHtml(error.message)}</div>`; }
 }
 async function loadAgents() { if (!permissions.has("ticket.transfer")) return; try { agents = await api("/api/agents"); } catch (_) { agents = []; } }
-function bindActions() { $("escalation-list").querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button.dataset.action, button.dataset.id))); }
+function bindActions() { $("escalation-board").querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button.dataset.action, button.dataset.id))); }
 async function handleAction(action, id) {
   const ticket = tickets.find((item) => String(item.id) === String(id)); if (!ticket) return;
   try {
@@ -105,5 +155,10 @@ window.addEventListener("beforeunload", () => {
   stopRealtimePolling();
 });
 $("refresh-btn").addEventListener("click", refreshTickets);
+$("staff-search").addEventListener("input", renderBoard);
+$("staff-priority-filter").addEventListener("change", renderBoard);
+$("staff-sla-filter").addEventListener("change", renderBoard);
+$("staff-assignee-filter").addEventListener("change", renderBoard);
+$("staff-active-only").addEventListener("change", renderBoard);
 $("logout-btn").addEventListener("click", async () => { await fetch("/api/logout", { method: "POST" }); window.location.href = "/login"; });
 window.addEventListener("DOMContentLoaded", async () => { try { const me = await api("/api/me"); if (me.role !== "agent") { window.location.href = me.role === "admin" ? "/admin" : "/"; return; } currentUser = me.username; permissions = new Set(me.permissions || []); $("staff-username").textContent = `客服：${currentUser}`; await loadAgents(); await refreshTickets(); startRealtime(); } catch (_) { window.location.href = "/login"; } });
