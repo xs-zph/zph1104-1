@@ -134,6 +134,34 @@ ai_ticket_system/
 
 ## 🚀 快速开始
 
+### Docker Compose 部署
+
+已安装 Docker Desktop 时，可以直接启动应用、MySQL 和 Redis：
+
+```bash
+docker compose up -d --build
+```
+
+启动完成后访问 **http://127.0.0.1:8000**。首次启动会自动创建数据库表和演示账号，
+持久化数据保存在 Docker volumes 中；查看状态或日志：
+
+```bash
+docker compose ps
+docker compose logs -f app
+```
+
+Compose 默认使用开发密码和演示数据，仅适合本地验收。生产部署前请在项目根目录 `.env`
+中设置 `MYSQL_ROOT_PASSWORD`、`APP_MYSQL_PASSWORD`、`DEEPSEEK_API_KEY`，并将
+`DEMO_DATA_ENABLED=false`、`SESSION_COOKIE_SECURE=true`；密钥不会写入镜像。
+
+停止服务但保留数据：
+
+```bash
+docker compose down
+```
+
+### 本地 Python 部署
+
 ### 1. 安装依赖
 
 ```bash

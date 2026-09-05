@@ -1,0 +1,70 @@
+services:
+  app:
+    build:
+      context: .
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${APP_MYSQL_USER:-ai_ticket}
+      MYSQL_PASSWORD: ${APP_MYSQL_PASSWORD:-ai_ticket_dev_password}
+      MYSQL_DB: ${MYSQL_DB:-ai_ticket}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-ai_ticket:}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      VISION_MODEL: ${VISION_MODEL:-}
+      VISION_BASE_URL: ${VISION_BASE_URL:-}
+      VISION_API_KEY: ${VISION_API_KEY:-}
+      DEMO_DATA_ENABLED: ${DEMO_DATA_ENABLED:-true}
+      MCP_ENABLED: ${MCP_ENABLED:-true}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - chroma_data:/app/data/chroma
+      - logs_data:/app/logs
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_dev_password}
+      MYSQL_DATABASE: ${MYSQL_DB:-ai_ticket}
+      MYSQL_USER: ${APP_MYSQL_USER:-ai_ticket}
+      MYSQL_PASSWORD: ${APP_MYSQL_PASSWORD:-ai_ticket_dev_password}
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis_data:/data
+
+volumes:
+  mysql_data:
+  redis_data:
+  chroma_data:
+  logs_data:
