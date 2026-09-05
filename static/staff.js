@@ -41,7 +41,69 @@ async function handleAction(action, id) {
     await refreshTickets();
   } catch (error) { window.alert(error.message); }
 }
-function startRealtime() { if (typeof EventSource === "undefined") return window.setInterval(refreshTickets, 3000); const source = new EventSource("/api/events"); source.addEventListener("ticket_escalated", refreshTickets); source.addEventListener("customer_message", refreshTickets); source.addEventListener("ticket_updated", refreshTickets); source.addEventListener("human_replied", refreshTickets); source.onerror = () => { source.close(); window.setInterval(refreshTickets, 3000); }; }
+let realtimeSource = null;
+let realtimeRetryTimer = null;
+let realtimePollTimer = null;
+let realtimeRetryDelay = 1000;
+let realtimeCursor = "";
+const REALTIME_EVENTS = ["ticket_escalated", "customer_message", "ticket_updated", "human_replied"];
+
+function startRealtimePolling() {
+  if (realtimePollTimer === null) realtimePollTimer = window.setInterval(refreshTickets, 3000);
+}
+
+function stopRealtimePolling() {
+  if (realtimePollTimer !== null) {
+    window.clearInterval(realtimePollTimer);
+    realtimePollTimer = null;
+  }
+}
+
+function scheduleRealtimeReconnect() {
+  if (realtimeRetryTimer !== null) return;
+  const delay = realtimeRetryDelay;
+  realtimeRetryDelay = Math.min(realtimeRetryDelay * 2, 30000);
+  realtimeRetryTimer = window.setTimeout(() => {
+    realtimeRetryTimer = null;
+    connectRealtime();
+  }, delay);
+}
+
+function connectRealtime() {
+  if (typeof EventSource === "undefined" || realtimeSource !== null) {
+    startRealtimePolling();
+    return;
+  }
+  const query = realtimeCursor ? `?since=${encodeURIComponent(realtimeCursor)}` : "";
+  const source = new EventSource("/api/events" + query);
+  realtimeSource = source;
+  source.onopen = () => {
+    realtimeRetryDelay = 1000;
+    stopRealtimePolling();
+  };
+  REALTIME_EVENTS.forEach((eventType) => source.addEventListener(eventType, (event) => {
+    realtimeCursor = event.lastEventId || realtimeCursor;
+    refreshTickets();
+  }));
+  source.onerror = () => {
+    if (realtimeSource !== source) return;
+    source.close();
+    realtimeSource = null;
+    startRealtimePolling();
+    scheduleRealtimeReconnect();
+  };
+}
+
+function startRealtime() {
+  if (typeof EventSource === "undefined") return startRealtimePolling();
+  connectRealtime();
+}
+
+window.addEventListener("beforeunload", () => {
+  realtimeSource?.close();
+  if (realtimeRetryTimer !== null) window.clearTimeout(realtimeRetryTimer);
+  stopRealtimePolling();
+});
 $("refresh-btn").addEventListener("click", refreshTickets);
 $("logout-btn").addEventListener("click", async () => { await fetch("/api/logout", { method: "POST" }); window.location.href = "/login"; });
 window.addEventListener("DOMContentLoaded", async () => { try { const me = await api("/api/me"); if (me.role !== "agent") { window.location.href = me.role === "admin" ? "/admin" : "/"; return; } currentUser = me.username; permissions = new Set(me.permissions || []); $("staff-username").textContent = `客服：${currentUser}`; await loadAgents(); await refreshTickets(); startRealtime(); } catch (_) { window.location.href = "/login"; } });

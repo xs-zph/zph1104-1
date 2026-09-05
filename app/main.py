@@ -506,6 +506,7 @@ def me(user: dict | None = Depends(auth.get_current_user)):
 async def event_stream(
     request: Request,
     last_event_id: str = Header(default="", alias="Last-Event-ID"),
+    since: str = "",
     user: dict | None = Depends(auth.get_current_user),
 ):
     """SSE 实时事件流；事件按服务端会话身份过滤。"""
@@ -513,7 +514,7 @@ async def event_stream(
         raise HTTPException(status_code=401, detail="未登录或登录已失效")
 
     try:
-        cursor = max(0, int(last_event_id or 0))
+        cursor = max(0, int(last_event_id or since or 0))
     except ValueError:
         cursor = 0
     is_admin = user.get("role") == "admin"

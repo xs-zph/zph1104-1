@@ -78,6 +78,29 @@ class EventStreamTests(unittest.TestCase):
         self.assertIn("event: human_replied", chunk)
         self.assertIn('"ticket_id": 12', chunk)
 
+    def test_event_stream_accepts_query_cursor_for_manual_reconnect(self):
+        async def consume_event():
+            baseline = events.broker.publish("test_baseline", {})
+            response = await main.event_stream(
+                self.Request(),
+                last_event_id="",
+                since=str(baseline.id),
+                user={"username": "alice", "role": "customer"},
+            )
+            iterator = response.body_iterator
+            await iterator.__anext__()
+            events.broker.publish(
+                "human_replied",
+                {"ticket_id": 15, "username": "alice", "human_answer": "补发的回复"},
+            )
+            chunk = await asyncio.wait_for(iterator.__anext__(), timeout=1)
+            await iterator.aclose()
+            return chunk
+
+        chunk = asyncio.run(consume_event())
+        self.assertIn("event: human_replied", chunk)
+        self.assertIn('"ticket_id": 15', chunk)
+
     def test_admin_event_stream_emits_customer_message(self):
         async def consume_event():
             baseline = events.broker.publish("test_baseline", {})

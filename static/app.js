@@ -21,6 +21,9 @@ const humanResponseTicketIds = new Set();
 let humanResponsePollTimer = null;
 const lastHumanAnswers = new Map();
 let humanResponseEventSource = null;
+let humanResponseReconnectTimer = null;
+let humanResponseRetryDelay = 1000;
+let humanResponseCursor = "";
 
 function authHeaders() {
   return {
@@ -250,19 +253,20 @@ function handleHumanResponse(ticketId, answer, handoffActive = false) {
 }
 
 function startHumanResponseRealtime() {
-  if (typeof EventSource === "undefined") return;
-  const source = new EventSource("/api/events");
+  if (typeof EventSource === "undefined" || humanResponseEventSource !== null) return;
+  const query = humanResponseCursor ? `?since=${encodeURIComponent(humanResponseCursor)}` : "";
+  const source = new EventSource("/api/events" + query);
   humanResponseEventSource = source;
-  let opened = false;
   source.onopen = () => {
-    opened = true;
+    humanResponseRetryDelay = 1000;
     if (humanResponsePollTimer !== null) {
-      clearInterval(humanResponsePollTimer);
+      window.clearInterval(humanResponsePollTimer);
       humanResponsePollTimer = null;
     }
   };
   source.addEventListener("human_replied", (event) => {
     try {
+      humanResponseCursor = event.lastEventId || humanResponseCursor;
       const data = JSON.parse(event.data);
       handleHumanResponse(data.ticket_id, data.human_answer, data.handoff_active === true);
     } catch (err) {
@@ -270,22 +274,21 @@ function startHumanResponseRealtime() {
     }
   });
   source.onerror = () => {
-    if (source.readyState === EventSource.CLOSED) {
-      humanResponseEventSource = null;
-      if (humanResponseTicketIds.size && humanResponsePollTimer === null) {
-        humanResponsePollTimer = window.setInterval(pollHumanResponses, 3000);
-      }
+    if (humanResponseEventSource !== source) return;
+    source.close();
+    humanResponseEventSource = null;
+    if (humanResponseTicketIds.size && humanResponsePollTimer === null) {
+      humanResponsePollTimer = window.setInterval(pollHumanResponses, 3000);
+    }
+    if (humanResponseReconnectTimer === null) {
+      const delay = humanResponseRetryDelay;
+      humanResponseRetryDelay = Math.min(humanResponseRetryDelay * 2, 30000);
+      humanResponseReconnectTimer = window.setTimeout(() => {
+        humanResponseReconnectTimer = null;
+        startHumanResponseRealtime();
+      }, delay);
     }
   };
-  window.setTimeout(() => {
-    if (!opened && humanResponseEventSource === source) {
-      source.close();
-      humanResponseEventSource = null;
-      if (humanResponseTicketIds.size && humanResponsePollTimer === null) {
-        humanResponsePollTimer = window.setInterval(pollHumanResponses, 3000);
-      }
-    }
-  }, 10000);
 }
 
 async function pollHumanResponses() {
