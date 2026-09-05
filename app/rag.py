@@ -19,6 +19,7 @@ import os
 import re
 import threading
 import uuid
+from datetime import datetime
 
 import chromadb
 import numpy as np
@@ -426,6 +427,49 @@ def get_docs_collection():
     )
 
 
+def ingest_document_text(text: str, source_name: str) -> dict:
+    """将一份已提取的文档按来源替换写入文档向量集合。"""
+    chunks = chunk_text(text)
+    if not chunks:
+        raise ValueError("文档没有可索引的文本内容")
+    source_name = (source_name or "未命名文档").strip()[:255]
+    collection = get_docs_collection()
+    try:
+        old = collection.get(where={"source": source_name})
+        old_ids = old.get("ids", [])
+        if old_ids:
+            collection.delete(ids=old_ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("清理旧文档块失败，将继续写入新版本：%s", exc)
+
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ids = [f"upload-{digest}-{index}" for index in range(len(chunks))]
+    metadatas = [
+        {"source": source_name, "chunk_index": index, "imported_at": imported_at}
+        for index in range(len(chunks))
+    ]
+    collection.upsert(ids=ids, documents=chunks, metadatas=metadatas)
+    logger.info("上传文档已索引：%s，共 %d 个文本块", source_name, len(chunks))
+    return {"source": source_name, "chunks": len(chunks), "characters": len(text)}
+
+
+def list_document_sources() -> list[dict]:
+    """列出已索引文档来源和文本块数量，不返回文档正文。"""
+    collection = get_docs_collection()
+    if collection.count() == 0:
+        return []
+    result = collection.get(include=["metadatas"])
+    grouped = {}
+    for meta in result.get("metadatas", []) or []:
+        meta = meta or {}
+        source = meta.get("source") or "未命名文档"
+        item = grouped.setdefault(source, {"source": source, "chunks": 0, "imported_at": ""})
+        item["chunks"] += 1
+        item["imported_at"] = max(item["imported_at"], str(meta.get("imported_at") or ""))
+    return sorted(grouped.values(), key=lambda item: item["source"])
+
+
 def ingest_documents(docs_dir=None, reset: bool = True) -> int:
     """把 data/docs/ 里的产品手册/政策文档切块、向量化后写入向量库。
 
@@ -478,6 +522,8 @@ def retrieve_docs(query: str, top_k: int = None) -> list[dict]:
     """
     top_k = top_k or config.Config.RAG_TOP_K
     collection = get_docs_collection()
+    if collection.count() == 0:
+        return []
     result = collection.query(query_texts=[query], n_results=top_k)
 
     chunks = []

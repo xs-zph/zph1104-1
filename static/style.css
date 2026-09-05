@@ -894,6 +894,27 @@ a { text-decoration: none; color: inherit; }
 .faq-item:hover { background: rgba(255, 255, 255, 0.06); }
 .faq-item .faq-q { font-weight: 700; color: var(--text-0); font-size: 13px; }
 .faq-item .faq-a { font-size: 13px; color: var(--text-2); margin-top: 5px; line-height: 1.6; }
+.knowledge-import { margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--line); }
+.knowledge-import-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 14px; }
+.knowledge-import-head h3 { color: var(--text-0); font-size: 16px; }
+.knowledge-import-head .panel-desc { margin: 6px 0 0; }
+.document-upload-form { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 7px; background: #f7fbfa; }
+.document-file { display: flex; align-items: center; flex: 1; min-width: 0; gap: 10px; color: var(--text-2); font-size: 12px; }
+.document-file input { min-width: 0; flex: 1; color: var(--text-1); font: inherit; font-size: 12px; }
+.document-file input::file-selector-button { margin-right: 8px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; color: var(--text-1); font: inherit; cursor: pointer; }
+.document-upload-result { margin-top: 10px; padding: 9px 11px; border-left: 3px solid var(--green); background: #eaf6f1; color: var(--green); font-size: 12px; }
+.document-upload-result.error-text { border-left-color: var(--red); background: #fff0ed; }
+.document-list { display: flex; flex-direction: column; gap: 7px; margin-top: 14px; }
+.document-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.document-row div { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.document-row b { overflow-wrap: anywhere; color: var(--text-0); font-size: 13px; }
+.document-row span, .document-row time { color: var(--text-3); font-size: 11px; }
+@media (max-width: 600px) {
+  .knowledge-import-head { flex-direction: column; gap: 7px; }
+  .document-upload-form { align-items: stretch; flex-direction: column; }
+  .document-file { align-items: stretch; flex-direction: column; gap: 7px; }
+  .document-row { align-items: flex-start; flex-direction: column; gap: 5px; }
+}
 
 /* 订单管理（增删改查） */
 .order-form { margin-bottom: 22px; }

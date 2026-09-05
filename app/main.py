@@ -30,7 +30,7 @@ from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException,
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import auth, config, db, events, feedback, memory, metrics, privacy, profile, rag, redis_store, router, sla, vision, wechat
+from app import auth, config, db, document_ingest, events, feedback, memory, metrics, privacy, profile, rag, redis_store, router, sla, vision, wechat
 from app.config import setup_logging
 from app.schemas import FAQCreate, FAQUpdate, FeedbackRequest, FeedbackTagRequest, LoginOut, LoginRequest, ManagedPasswordReset, ManagedUserCreate, ManagedUserUpdate, OrderCreate, OrderUpdate, PasswordResetChallengeRequest, PasswordResetRequest, PhoneCodeSendRequest, PhoneCodeVerifyRequest, ProfileFactUpdate, RegisterRequest, ResolveRequest, TicketAssignRequest, TicketCreate, TicketStatusRequest
 
@@ -1078,6 +1078,29 @@ def delete_order(order_id: str, username: str = Depends(auth.require_admin)):
 
 
 # ---------------- 知识库管理（仅管理员，实时更新 RAG） ----------------
+
+@app.get("/api/knowledge-documents")
+def list_knowledge_documents(username: str = Depends(auth.require_admin)):
+    """列出已索引文档来源（仅管理员，不返回正文）。"""
+    return rag.list_document_sources()
+
+
+@app.post("/api/knowledge-documents")
+async def upload_knowledge_document(
+    file: UploadFile = File(...),
+    username: str = Depends(auth.require_admin),
+):
+    """上传并索引 PDF / DOCX / Markdown / TXT 文档，文件本身不落盘。"""
+    data = await file.read(config.Config.MAX_DOCUMENT_BYTES + 1)
+    try:
+        result = document_ingest.ingest_upload(file.filename or "", data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("知识库文档导入失败：%s", file.filename)
+        raise HTTPException(status_code=500, detail="文档处理失败，请稍后重试") from exc
+    logger.info("管理员 %s 导入知识库文档：%s", username, result["filename"])
+    return result
 
 @app.get("/api/faq")
 def list_faq(include_disabled: bool = False, username: str = Depends(auth.require_admin)):

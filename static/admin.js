@@ -5,10 +5,13 @@ const permissionLabels = {
 };
 let managedUsers = [];
 let faqEntries = [];
+let documentEntries = [];
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
 async function api(path, options = {}) {
-  const response = await fetch(path, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options });
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (options.body instanceof FormData) delete headers["Content-Type"];
+  const response = await fetch(path, { ...options, headers });
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || "请求失败");
   return response.json();
 }
@@ -84,6 +87,12 @@ async function loadFaq() {
   $("faq-list").querySelectorAll("[data-faq-history]").forEach((button) => button.addEventListener("click", () => showFaqHistory(button.dataset.faqHistory)));
   $("faq-list").querySelectorAll("[data-faq-toggle]").forEach((button) => button.addEventListener("click", () => toggleFaq(button.dataset.faqToggle, button.dataset.enabled === "1")));
 }
+async function loadDocuments() {
+  documentEntries = await api("/api/knowledge-documents");
+  $("knowledge-document-list").innerHTML = documentEntries.length
+    ? documentEntries.map((item) => `<div class="document-row"><div><b>${escapeHtml(item.source)}</b><span>${escapeHtml(item.chunks)} 个文本块</span></div><time>${escapeHtml(item.imported_at || "")}</time></div>`).join("")
+    : '<div class="empty">暂无上传文档</div>';
+}
 async function showFaqHistory(id) {
   const detail = $("faq-history-detail"); detail.classList.remove("hidden"); detail.innerHTML = '<div class="empty">加载知识变更历史...</div>';
   const actionNames = { created: "新增", updated: "编辑", disabled: "停用", restored: "恢复" };
@@ -106,6 +115,25 @@ $("refresh-accounts-btn").addEventListener("click", () => Promise.all([loadAccou
 $("refresh-audits-btn").addEventListener("click", loadAudits);
 $("refresh-agent-runs-btn").addEventListener("click", loadAgentRuns);
 $("refresh-faq-btn").addEventListener("click", loadFaq);
+$("knowledge-document-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = $("knowledge-document-file");
+  const file = input.files?.[0];
+  if (!file) return;
+  const button = $("knowledge-upload-btn");
+  const result = $("knowledge-upload-result");
+  button.disabled = true; button.textContent = "索引中..."; result.classList.add("hidden");
+  try {
+    const body = new FormData(); body.append("file", file);
+    const data = await api("/api/knowledge-documents", { method: "POST", body });
+    result.textContent = `${data.filename} 已完成索引：${data.chunks} 个文本块，${data.characters} 个字符`;
+    result.classList.remove("hidden", "error-text");
+    input.value = "";
+    await loadDocuments();
+  } catch (error) {
+    result.textContent = error.message; result.classList.remove("hidden"); result.classList.add("error-text");
+  } finally { button.disabled = false; button.textContent = "上传并索引"; }
+});
 $("account-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const key = $("account-edit-key").value; const role = $("account-role").value; const permissions = role === "agent" ? selectedPermissions() : [];
   try {
@@ -124,5 +152,5 @@ $("faq-form").addEventListener("submit", async (event) => {
 });
 $("logout-btn").addEventListener("click", async () => { await fetch("/api/logout", { method: "POST" }); window.location.href = "/login"; });
 window.addEventListener("DOMContentLoaded", async () => {
-  try { const me = await api("/api/me"); if (me.role !== "admin") { window.location.href = me.role === "manager" ? "/manager" : me.role === "agent" ? "/staff" : "/"; return; } $("admin-username").textContent = `管理员：${me.username}`; renderPermissionPicker(); await Promise.all([loadAccounts(), loadAudits(), loadAgentRuns(), loadFaq()]); } catch (_) { window.location.href = "/login"; }
+  try { const me = await api("/api/me"); if (me.role !== "admin") { window.location.href = me.role === "manager" ? "/manager" : me.role === "agent" ? "/staff" : "/"; return; } $("admin-username").textContent = `管理员：${me.username}`; renderPermissionPicker(); await Promise.all([loadAccounts(), loadAudits(), loadAgentRuns(), loadFaq(), loadDocuments()]); } catch (_) { window.location.href = "/login"; }
 });

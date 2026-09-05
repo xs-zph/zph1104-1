@@ -40,6 +40,7 @@
 - **中心式多 Agent**：`main_agent` 统一调度、监管和裁决专业子 Agent；子 Agent 不能互相通信，只能通过结构化 JSON 向主 Agent 汇报
 - **共享黑板**：主 Agent 写入工单级审计黑板，所有子 Agent 按任务读取，支持协作上下文留痕和结果重放
 - **多 Agent 运行审计**：系统管理员可在后台查看脱敏后的任务摘要、子 Agent、状态和 JSON 事件轨迹
+- **知识库文档导入**：管理员可上传 PDF、DOCX、Markdown 和 TXT，服务端在内存中提取文本、切块并索引，原文件不落盘
 - **大模型并发治理**：统一使用有界任务队列和固定 worker，支持请求超时、瞬时错误重试、熔断保护；队列过载或上游不可用时自动转人工
 
 ## 🏗️ 系统架构
@@ -98,6 +99,7 @@ ai_ticket_system/
 │   ├── db.py               # MySQL 数据存储（工单 + 用户）
 │   ├── mcp_client.py       # MCP 工具发现、schema 转换、调用和降级
 │   ├── multi_agent.py       # 中心式多 Agent、JSON 协议和共享黑板
+│   ├── document_ingest.py  # PDF / DOCX / Markdown / TXT 文档提取与校验
 │   ├── schemas.py          # 接口数据模型
 │   └── metrics.py          # 效果指标统计
 ├── prompts/                # 提示词（分类 / 回复 / 统计 / 复盘）
@@ -295,6 +297,8 @@ python scripts/run_demo.py      # 跑 20 张，打印分类准确率 / 自动处
 | POST | `/api/escalations/{id}/resolve` | 是（仅 agent） | 标记已处理 |
 | GET  | `/api/admin/agent-runs` | 是（仅 admin） | 多 Agent 运行摘要 |
 | GET  | `/api/admin/agent-runs/{task_id}` | 是（仅 admin） | 单次运行的脱敏 JSON 轨迹 |
+| GET  | `/api/knowledge-documents` | 是（仅 admin） | 已索引文档来源和文本块数量 |
+| POST | `/api/knowledge-documents` | 是（仅 admin） | 上传并索引 PDF / DOCX / Markdown / TXT |
 | GET  | `/api/metrics` | 是（仅 manager） | 核心指标 |
 | GET  | `/health` | 否 | 健康检查 |
 

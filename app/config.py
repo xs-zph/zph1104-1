@@ -34,6 +34,8 @@ class Config:
     VISION_BASE_URL = os.getenv("VISION_BASE_URL") or LLM_BASE_URL or DEEPSEEK_BASE_URL
     VISION_API_KEY = os.getenv("VISION_API_KEY") or LLM_API_KEY or DEEPSEEK_API_KEY
     MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(8 * 1024 * 1024)))
+    MAX_DOCUMENT_BYTES = int(os.getenv("MAX_DOCUMENT_BYTES", str(10 * 1024 * 1024)))
+    MAX_DOCUMENT_CHARS = int(os.getenv("MAX_DOCUMENT_CHARS", "200000"))
 
     # 企业部署基础设施；留空 Redis 时继续使用单机内存降级。
     REDIS_URL = os.getenv("REDIS_URL", "")

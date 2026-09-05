@@ -140,15 +140,26 @@ def _search_faq(question: str) -> str:
     条目，但保留弱相关条目——因为这里由大模型再判断一次相关性，多给候选
     比漏掉好，避免「空气炸锅怎么用」这类近似问法被误判为「查不到」。
     """
-    chunks = rag.retrieve(question, top_k=config.Config.RAG_TOP_K)
-    chunks = rag.rerank(question, chunks, top_n=3)
+    faq_chunks = rag.retrieve(question, top_k=config.Config.RAG_TOP_K)
+    faq_chunks = rag.rerank(question, faq_chunks, top_n=3)
     relevant = [
-        c for c in chunks
+        c for c in faq_chunks
         if c.get("distance") is not None and c["distance"] <= config.Config.RAG_AGENT_MAX_DISTANCE
     ]
-    if not relevant:
+    document_chunks = rag.retrieve_docs(question, top_k=config.Config.RAG_TOP_K)
+    relevant_documents = [
+        c for c in document_chunks
+        if c.get("distance") is not None and c["distance"] <= config.Config.RAG_AGENT_MAX_DISTANCE
+    ][:3]
+    if not relevant and not relevant_documents:
         return "知识库暂无相关内容"
-    return "\n".join(f"问：{c['question']}\n答：{c['answer']}" for c in relevant)
+    parts = [
+        f"问：{c['question']}\n答：{c['answer']}" for c in relevant
+    ]
+    parts.extend(
+        f"文档片段（来源：{c['source']}）：\n{c['text']}" for c in relevant_documents
+    )
+    return "\n\n".join(parts)
 
 
 def _list_my_orders(username: str | None) -> str:

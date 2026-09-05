@@ -22,8 +22,14 @@
     <section class="panel manager-panel knowledge-panel"><div class="panel-head"><div><h2 class="panel-title">知识库管理</h2><p class="panel-desc">维护客服可直接引用的政策与流程，保存后立即同步检索库。</p></div><div class="panel-head-right"><span class="panel-tip" id="faq-count"></span><button class="btn btn-ghost" id="refresh-faq-btn" type="button">刷新</button></div></div>
       <form id="faq-form" class="faq-form" autocomplete="off"><input type="hidden" id="faq-edit-key" /><div class="field"><label for="faq-question">客户问题</label><input id="faq-question" required maxlength="500" placeholder="例如：退货需要满足什么条件？" /></div><div class="field"><label for="faq-answer">标准答案</label><textarea id="faq-answer" required maxlength="2000" rows="4" placeholder="填写可直接回复客户的准确答案"></textarea></div><div class="faq-form-actions"><button class="btn btn-primary" id="faq-submit-btn" type="submit">新增知识</button><button class="btn btn-ghost hidden" id="faq-cancel-btn" type="button">取消编辑</button></div></form>
       <div id="faq-list" class="faq-list"><div class="empty">加载中...</div></div><div id="faq-history-detail" class="agent-run-detail hidden"></div>
+      <div class="knowledge-import">
+        <div class="knowledge-import-head"><div><h3>导入业务文档</h3><p class="panel-desc">支持 PDF、DOCX、Markdown 和 TXT，文本提取后写入文档检索库。</p></div><span class="panel-tip">单文件 10 MB · 不保存原文件</span></div>
+        <form id="knowledge-document-form" class="document-upload-form" enctype="multipart/form-data"><label class="document-file"><span>选择文件</span><input type="file" id="knowledge-document-file" accept=".pdf,.docx,.md,.txt" required /></label><button class="btn btn-primary" id="knowledge-upload-btn" type="submit">上传并索引</button></form>
+        <div class="document-upload-result hidden" id="knowledge-upload-result"></div>
+        <div id="knowledge-document-list" class="document-list"><div class="empty">暂无上传文档</div></div>
+      </div>
     </section>
   </main>
-  <script src="/static/admin.js?v=20260905-3"></script>
+  <script src="/static/admin.js?v=20260906-documents"></script>
 </body>
 </html>
