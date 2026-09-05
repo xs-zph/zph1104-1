@@ -245,6 +245,13 @@ class AuthSecurityTests(unittest.TestCase):
                 auth.require_manager()
         self.assertEqual(ctx.exception.status_code, 403)
 
+    def test_admin_dependency_rejects_manager_for_knowledge_operations(self):
+        with patch.object(auth, "get_username", return_value="manager"), \
+             patch.object(auth.db, "get_user_by_username", return_value={"username": "manager", "role": "manager", "active": 1}):
+            with self.assertRaises(HTTPException) as ctx:
+                auth.require_admin()
+        self.assertEqual(ctx.exception.status_code, 403)
+
     def test_manager_page_rejects_admin(self):
         with self.assertRaises(HTTPException) as ctx:
             main.manager_page({"username": "admin", "role": "admin", "active": 1})

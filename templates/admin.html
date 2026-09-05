@@ -19,7 +19,11 @@
     </section>
     <section class="panel manager-panel"><div class="panel-head"><h2 class="panel-title">账号变更审计</h2><button class="btn btn-ghost" id="refresh-audits-btn">刷新</button></div><div id="account-audits" class="audit-list"><div class="empty">加载中...</div></div></section>
     <section class="panel manager-panel"><div class="panel-head"><div><h2 class="panel-title">多 Agent 运行审计</h2><p class="panel-desc">仅管理员可查看脱敏后的调度摘要和 JSON 轨迹。</p></div><button class="btn btn-ghost" id="refresh-agent-runs-btn">刷新</button></div><div id="agent-runs" class="agent-run-list"><div class="empty">加载中...</div></div><div id="agent-run-detail" class="agent-run-detail hidden"></div></section>
+    <section class="panel manager-panel knowledge-panel"><div class="panel-head"><div><h2 class="panel-title">知识库管理</h2><p class="panel-desc">维护客服可直接引用的政策与流程，保存后立即同步检索库。</p></div><div class="panel-head-right"><span class="panel-tip" id="faq-count"></span><button class="btn btn-ghost" id="refresh-faq-btn" type="button">刷新</button></div></div>
+      <form id="faq-form" class="faq-form" autocomplete="off"><input type="hidden" id="faq-edit-key" /><div class="field"><label for="faq-question">客户问题</label><input id="faq-question" required maxlength="500" placeholder="例如：退货需要满足什么条件？" /></div><div class="field"><label for="faq-answer">标准答案</label><textarea id="faq-answer" required maxlength="2000" rows="4" placeholder="填写可直接回复客户的准确答案"></textarea></div><div class="faq-form-actions"><button class="btn btn-primary" id="faq-submit-btn" type="submit">新增知识</button><button class="btn btn-ghost hidden" id="faq-cancel-btn" type="button">取消编辑</button></div></form>
+      <div id="faq-list" class="faq-list"><div class="empty">加载中...</div></div>
+    </section>
   </main>
-  <script src="/static/admin.js?v=20260904-2"></script>
+  <script src="/static/admin.js?v=20260905-3"></script>
 </body>
 </html>

@@ -1,9 +1,10 @@
-// 系统管理员后台：只管理账号、密码、角色和客服权限。
+// 系统管理员后台：管理账号安全、权限、知识库和 Agent 审计。
 const permissionLabels = {
   "ticket.view": "查看工单", "ticket.reply": "回复工单", "ticket.claim": "接单",
   "ticket.transfer": "转派工单", "ticket.resolve": "结束工单",
 };
 let managedUsers = [];
+let faqEntries = [];
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
 async function api(path, options = {}) {
@@ -65,11 +66,36 @@ async function showAgentRun(taskId) {
     $("close-agent-detail").addEventListener("click", () => detail.classList.add("hidden"));
   } catch (error) { detail.innerHTML = `<div class="empty error-text">${escapeHtml(error.message)}</div>`; }
 }
+function resetFaqForm() {
+  $("faq-form").reset(); $("faq-edit-key").value = "";
+  $("faq-submit-btn").textContent = "新增知识"; $("faq-cancel-btn").classList.add("hidden");
+}
+function editFaq(entry) {
+  $("faq-edit-key").value = entry.id; $("faq-question").value = entry.question || ""; $("faq-answer").value = entry.answer || "";
+  $("faq-submit-btn").textContent = "保存知识"; $("faq-cancel-btn").classList.remove("hidden");
+  window.scrollTo({ top: $("faq-form").getBoundingClientRect().top + window.scrollY - 30, behavior: "smooth" });
+}
+async function loadFaq() {
+  faqEntries = await api("/api/faq?include_disabled=true");
+  const enabled = faqEntries.filter((entry) => entry.enabled).length;
+  $("faq-count").textContent = `${enabled}/${faqEntries.length} 条启用`;
+  $("faq-list").innerHTML = faqEntries.map((entry) => `<article class="faq-item ${entry.enabled ? "" : "disabled"}"><div class="faq-q">${escapeHtml(entry.question)}</div><div class="faq-a">${escapeHtml(entry.answer)}</div><div class="faq-item-actions"><span class="panel-tip">${entry.enabled ? "已启用" : "已停用"}</span><button class="btn btn-ghost btn-sm" data-faq-edit="${entry.id}">编辑</button><button class="btn btn-ghost btn-sm" data-faq-toggle="${entry.id}" data-enabled="${entry.enabled ? "1" : "0"}">${entry.enabled ? "停用" : "恢复"}</button></div></article>`).join("") || '<div class="empty">暂无知识条目</div>';
+  $("faq-list").querySelectorAll("[data-faq-edit]").forEach((button) => button.addEventListener("click", () => editFaq(faqEntries.find((entry) => String(entry.id) === button.dataset.faqEdit))));
+  $("faq-list").querySelectorAll("[data-faq-toggle]").forEach((button) => button.addEventListener("click", () => toggleFaq(button.dataset.faqToggle, button.dataset.enabled === "1")));
+}
+async function toggleFaq(id, enabled) {
+  try {
+    await api(enabled ? `/api/faq/${id}` : `/api/faq/${id}/restore`, { method: enabled ? "DELETE" : "POST" });
+    await loadFaq();
+  } catch (error) { window.alert(error.message); }
+}
 $("account-role").addEventListener("change", updatePermissionVisibility);
 $("account-cancel-btn").addEventListener("click", resetAccountForm);
+$("faq-cancel-btn").addEventListener("click", resetFaqForm);
 $("refresh-accounts-btn").addEventListener("click", () => Promise.all([loadAccounts(), loadAudits()]));
 $("refresh-audits-btn").addEventListener("click", loadAudits);
 $("refresh-agent-runs-btn").addEventListener("click", loadAgentRuns);
+$("refresh-faq-btn").addEventListener("click", loadFaq);
 $("account-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const key = $("account-edit-key").value; const role = $("account-role").value; const permissions = role === "agent" ? selectedPermissions() : [];
   try {
@@ -78,7 +104,15 @@ $("account-form").addEventListener("submit", async (event) => {
     resetAccountForm(); await loadAccounts(); await loadAudits();
   } catch (error) { window.alert(error.message); }
 });
+$("faq-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); const key = $("faq-edit-key").value;
+  const body = { question: $("faq-question").value.trim(), answer: $("faq-answer").value.trim() };
+  try {
+    await api(key ? `/api/faq/${key}` : "/api/faq", { method: key ? "PUT" : "POST", body: JSON.stringify(body) });
+    resetFaqForm(); await loadFaq();
+  } catch (error) { window.alert(error.message); }
+});
 $("logout-btn").addEventListener("click", async () => { await fetch("/api/logout", { method: "POST" }); window.location.href = "/login"; });
 window.addEventListener("DOMContentLoaded", async () => {
-  try { const me = await api("/api/me"); if (me.role !== "admin") { window.location.href = me.role === "manager" ? "/manager" : me.role === "agent" ? "/staff" : "/"; return; } $("admin-username").textContent = `管理员：${me.username}`; renderPermissionPicker(); await Promise.all([loadAccounts(), loadAudits(), loadAgentRuns()]); } catch (_) { window.location.href = "/login"; }
+  try { const me = await api("/api/me"); if (me.role !== "admin") { window.location.href = me.role === "manager" ? "/manager" : me.role === "agent" ? "/staff" : "/"; return; } $("admin-username").textContent = `管理员：${me.username}`; renderPermissionPicker(); await Promise.all([loadAccounts(), loadAudits(), loadAgentRuns(), loadFaq()]); } catch (_) { window.location.href = "/login"; }
 });
