@@ -7,6 +7,7 @@ import logging
 import queue
 import threading
 from datetime import datetime
+from uuid import uuid4
 
 import pymysql
 from pymysql.cursors import DictCursor
@@ -176,6 +177,28 @@ CREATE TABLE IF NOT EXISTS agent_blackboard_entries (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# 当前用户会话状态：新对话通过更换 conversation_id 隔离旧上下文。
+_CONVERSATION_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS conversation_states (
+    username       VARCHAR(64) PRIMARY KEY,
+    conversation_id CHAR(36) NOT NULL,
+    updated_at     DATETIME NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# 持久化短期对话记忆；只保存脱敏后的文本，保留最近 12 轮由 DAO 控制。
+_CONVERSATION_MESSAGES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS conversation_memory_messages (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    username        VARCHAR(64) NOT NULL,
+    conversation_id CHAR(36) NOT NULL,
+    role            VARCHAR(16) NOT NULL,
+    content         TEXT NOT NULL,
+    created_at      DATETIME NOT NULL,
+    INDEX idx_conversation_memory (username, conversation_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 
 _DEFAULT_DB = object()
 
@@ -309,6 +332,8 @@ def init_db():
             cur.execute(_FAQ_ENTRIES_SCHEMA)
             cur.execute(_PROFILE_FACTS_SCHEMA)
             cur.execute(_AGENT_BLACKBOARD_SCHEMA)
+            cur.execute(_CONVERSATION_STATE_SCHEMA)
+            cur.execute(_CONVERSATION_MESSAGES_SCHEMA)
             _migrate(cur)
     finally:
         conn.close()
@@ -853,6 +878,124 @@ def list_ticket_messages(ticket_id: int) -> list[dict]:
     try:
         with conn.cursor() as cur:
             return _list_ticket_messages(cur, ticket_id)
+    finally:
+        conn.close()
+
+
+def list_conversation_history(username: str, max_messages: int = 24) -> list[dict]:
+    """读取用户当前会话的最近消息，按时间正序返回。"""
+    max_messages = max(1, min(int(max_messages), 100))
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT conversation_id FROM conversation_states WHERE username = %s",
+                (username,),
+            )
+            state = cur.fetchone()
+            if not state:
+                return []
+            cur.execute(
+                "SELECT role, content FROM conversation_memory_messages "
+                "WHERE username = %s AND conversation_id = %s "
+                "ORDER BY id DESC LIMIT %s",
+                (username, state["conversation_id"], max_messages),
+            )
+            rows = cur.fetchall()
+            return list(reversed(rows))
+    finally:
+        conn.close()
+
+
+def append_conversation_message(username: str, role: str, content: str,
+                                max_messages: int = 24) -> None:
+    """向当前会话追加消息并裁剪旧上下文，事务内创建会话状态。"""
+    if role not in {"user", "assistant"}:
+        raise ValueError("会话消息角色不合法")
+    max_messages = max(1, min(int(max_messages), 100))
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _connect()
+    try:
+        conn.begin()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT conversation_id FROM conversation_states WHERE username = %s FOR UPDATE",
+                (username,),
+            )
+            state = cur.fetchone()
+            conversation_id = state["conversation_id"] if state else str(uuid4())
+            if state is None:
+                cur.execute(
+                    "INSERT INTO conversation_states (username, conversation_id, updated_at) "
+                    "VALUES (%s, %s, %s)",
+                    (username, conversation_id, now),
+                )
+            else:
+                cur.execute(
+                    "UPDATE conversation_states SET updated_at = %s WHERE username = %s",
+                    (now, username),
+                )
+            cur.execute(
+                "INSERT INTO conversation_memory_messages "
+                "(username, conversation_id, role, content, created_at) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (username, conversation_id, role, content, now),
+            )
+            cur.execute(
+                "SELECT id FROM conversation_memory_messages "
+                "WHERE username = %s AND conversation_id = %s "
+                "ORDER BY id DESC LIMIT %s",
+                (username, conversation_id, max_messages + 1),
+            )
+            stale_ids = [row["id"] for row in cur.fetchall()][max_messages:]
+            if stale_ids:
+                placeholders = ", ".join(["%s"] * len(stale_ids))
+                cur.execute(
+                    "DELETE FROM conversation_memory_messages "
+                    f"WHERE username = %s AND conversation_id = %s AND id IN ({placeholders})",
+                    [username, conversation_id, *stale_ids],
+                )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def clear_conversation_memory(username: str) -> None:
+    """切换到新会话并删除旧会话消息，避免新对话继承旧上下文。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    new_conversation_id = str(uuid4())
+    conn = _connect()
+    try:
+        conn.begin()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT conversation_id FROM conversation_states WHERE username = %s FOR UPDATE",
+                (username,),
+            )
+            state = cur.fetchone()
+            if state:
+                cur.execute(
+                    "DELETE FROM conversation_memory_messages WHERE username = %s AND conversation_id = %s",
+                    (username, state["conversation_id"]),
+                )
+                cur.execute(
+                    "UPDATE conversation_states SET conversation_id = %s, updated_at = %s "
+                    "WHERE username = %s",
+                    (new_conversation_id, now, username),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO conversation_states (username, conversation_id, updated_at) "
+                    "VALUES (%s, %s, %s)",
+                    (username, new_conversation_id, now),
+                )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
