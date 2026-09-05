@@ -45,11 +45,18 @@ class RegisterRequest(BaseModel):
     confirm_password: str
 
 
-class PasswordResetRequest(BaseModel):
-    """使用服务端配置的重置口令修改密码。"""
+class PasswordResetChallengeRequest(BaseModel):
+    """申请密码重置验证码。"""
 
     username: str
-    reset_code: str
+    phone: str
+
+
+class PasswordResetRequest(BaseModel):
+    """提交密码重置挑战验证码并设置新密码。"""
+
+    challenge_id: str
+    code: str
     password: str
     confirm_password: str
 

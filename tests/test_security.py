@@ -12,10 +12,12 @@ class AuthSecurityTests(unittest.TestCase):
     def setUp(self):
         auth.SESSIONS.clear()
         auth.PHONE_CHALLENGES.clear()
+        auth.PASSWORD_RESET_CHALLENGES.clear()
 
     def tearDown(self):
         auth.SESSIONS.clear()
         auth.PHONE_CHALLENGES.clear()
+        auth.PASSWORD_RESET_CHALLENGES.clear()
 
     def test_password_hash_uses_random_bcrypt_salt(self):
         first = auth.hash_password("correct horse")
@@ -190,19 +192,47 @@ class AuthSecurityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 auth.register_customer("valid_user", "12345678", "12345678")
 
-    def test_password_reset_requires_server_code_and_updates_bcrypt_hash(self):
-        user = {"username": "user", "role": "customer"}
-        with patch.object(auth.Config, "PASSWORD_RESET_CODE", "server-only-code"), \
+    def test_password_reset_uses_verified_phone_and_one_time_code(self):
+        user = {
+            "username": "user", "role": "customer", "active": 1,
+            "phone": "13800000000", "phone_verified_at": "2026-09-05 00:00:00",
+        }
+        with patch.object(auth.Config, "PHONE_VERIFICATION_TEST_CODE", "654321"), \
+             patch.object(auth.Config, "DEMO_DATA_ENABLED", True), \
              patch.object(auth.db, "get_user_by_username", return_value=user), \
-             patch.object(auth.db, "update_user_password", return_value=True) as update_password:
-            self.assertFalse(auth.reset_password("user", "wrong", "NewPass1", "NewPass1"))
-            self.assertTrue(
-                auth.reset_password("user", "server-only-code", "NewPass1", "NewPass1")
+             patch.object(auth.db, "update_user_password", return_value=True) as update_password, \
+             patch.object(auth.db, "insert_account_audit") as insert_audit:
+            challenge = auth.request_password_reset("user", "13800000000")
+            self.assertEqual(challenge["phone_masked"], "138****0000")
+            result = auth.verify_password_reset(
+                challenge["challenge_id"], "654321", "NewPass1", "NewPass1"
             )
 
+        self.assertTrue(result)
+        insert_audit.assert_called_once_with(
+            "user", "password_reset", "用户通过已绑定手机号重置密码", "self-service"
+        )
         new_hash = update_password.call_args.args[1]
         self.assertTrue(new_hash.startswith("$2b$"))
         self.assertTrue(auth.verify_password("NewPass1", new_hash))
+        with self.assertRaisesRegex(ValueError, "挑战"):
+            auth.verify_password_reset(
+                challenge["challenge_id"], "654321", "NewPass1", "NewPass1"
+            )
+
+    def test_password_reset_rejects_unverified_phone_without_revealing_account(self):
+        user = {
+            "username": "user", "role": "customer", "active": 1,
+            "phone": "13800000000", "phone_verified_at": None,
+        }
+        with patch.object(auth.db, "get_user_by_username", return_value=user):
+            challenge = auth.request_password_reset("user", "13800000000")
+
+        self.assertIn("challenge_id", challenge)
+        with self.assertRaisesRegex(ValueError, "重置失败"):
+            auth.verify_password_reset(
+                challenge["challenge_id"], challenge["demo_code"], "NewPass1", "NewPass1"
+            )
 
     def test_admin_and_manager_permissions_are_separate(self):
         self.assertEqual(auth.user_permissions({"role": "admin"}), {"account.manage"})

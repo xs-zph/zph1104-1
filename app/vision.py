@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+from io import BytesIO
+
+from PIL import Image, UnidentifiedImageError
 
 from app import llm
 from app.config import Config
@@ -25,7 +28,7 @@ VISION_SYSTEM_PROMPT = """
 
 
 def validate_image(content_type: str | None, data: bytes) -> str:
-    """校验声明类型和文件头，返回规范 MIME 类型。"""
+    """校验 MIME、文件头和真实图片结构，返回规范 MIME 类型。"""
     media_type = (content_type or "").lower().split(";", 1)[0].strip()
     signatures = ALLOWED_IMAGE_TYPES.get(media_type)
     if signatures is None:
@@ -38,6 +41,15 @@ def validate_image(content_type: str | None, data: bytes) -> str:
         valid = any(data.startswith(signature) for signature in signatures)
     if not valid:
         raise ValueError("图片内容与文件类型不匹配")
+    try:
+        with Image.open(BytesIO(data)) as image:
+            image.verify()
+        with Image.open(BytesIO(data)) as image:
+            width, height = image.size
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise ValueError("图片无法解码或结构无效") from exc
+    if width <= 0 or height <= 0 or width > 10000 or height > 10000:
+        raise ValueError("图片尺寸超出安全范围")
     return media_type
 
 

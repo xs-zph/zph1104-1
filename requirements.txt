@@ -3,6 +3,7 @@
 
 fastapi>=0.110,<1.0        # Web 框架（提供 API + 网页界面）
 python-multipart>=0.0.9    # FastAPI multipart 图片上传
+Pillow>=10.0              # 图片真实结构与尺寸校验
 uvicorn[standard]>=0.29     # ASGI 服务器，运行 FastAPI 应用
 pydantic>=2.6               # 数据校验（FastAPI 依赖它）
 python-dotenv>=1.0          # 读取 .env 配置文件

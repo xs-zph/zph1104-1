@@ -6,6 +6,7 @@
 """
 import json
 import os
+import re
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
@@ -14,6 +15,7 @@ from pydantic import Field
 from app import db
 
 mcp = FastMCP("business_mcp")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 def _current_username() -> str | None:
@@ -42,8 +44,8 @@ def _order_view(order: dict[str, Any]) -> dict[str, Any]:
 
 def _clean_identifier(value: str, label: str) -> str:
     value = (value or "").strip()
-    if not value or len(value) > 64:
-        raise ValueError(f"{label}不能为空且长度不能超过 64 个字符")
+    if not _IDENTIFIER_RE.fullmatch(value):
+        raise ValueError(f"{label}不能为空、长度不能超过 64 个字符且只能包含字母、数字、下划线或短横线")
     return value
 
 

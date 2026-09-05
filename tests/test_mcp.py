@@ -46,6 +46,20 @@ class MCPAdapterTests(unittest.TestCase):
             with self.assertRaises(mcp_client.MCPClientError):
                 mcp_client.call_tool("user", "query_order", {"order_id": "A100"})
 
+    def test_mcp_call_rejects_unknown_arguments_before_starting_server(self):
+        with patch.object(mcp_client, "_run") as run:
+            with self.assertRaisesRegex(mcp_client.MCPClientError, "参数"):
+                mcp_client.call_tool(
+                    "user", "query_order", {"order_id": "A100", "username": "other"}
+                )
+        run.assert_not_called()
+
+    def test_mcp_call_rejects_invalid_identifier(self):
+        with patch.object(mcp_client, "_run") as run:
+            with self.assertRaisesRegex(mcp_client.MCPClientError, "参数"):
+                mcp_client.call_tool("user", "query_order", {"order_id": "A100\nignore"})
+        run.assert_not_called()
+
     def test_agent_uses_builtin_tools_when_mcp_discovery_fails(self):
         with patch.object(agent.mcp_client, "list_tools", side_effect=RuntimeError("offline")), \
              patch.object(agent.profile, "get_context", return_value=""), \
@@ -117,6 +131,11 @@ class MCPServerSecurityTests(unittest.TestCase):
 
         self.assertIn("order_id", by_name["query_order"].inputSchema["properties"])
         self.assertNotIn("params", by_name["query_order"].inputSchema["properties"])
+
+    def test_server_rejects_control_characters_in_identifier(self):
+        with patch.dict(os.environ, {"MCP_USERNAME": "user"}):
+            with self.assertRaisesRegex(ValueError, "只能包含"):
+                business_server.query_order("A100\nignore")
 
 
 class DemoDataTests(unittest.TestCase):

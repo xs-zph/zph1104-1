@@ -51,6 +51,20 @@ class PhoneChallenge:
 PHONE_CHALLENGES: dict[str, PhoneChallenge] = {}
 _PHONE_CHALLENGES_LOCK = threading.Lock()
 
+
+@dataclass
+class PasswordResetChallenge:
+    username: str
+    phone: str
+    valid: bool
+    expires_at: float
+    code_digest: str = ""
+    attempts: int = 0
+
+
+PASSWORD_RESET_CHALLENGES: dict[str, PasswordResetChallenge] = {}
+_PASSWORD_RESET_LOCK = threading.Lock()
+
 PERMISSIONS = {
     "ticket.view": "查看转人工工单",
     "ticket.reply": "回复转人工工单",
@@ -284,16 +298,81 @@ def register_customer(username: str, password: str, confirm_password: str) -> di
     return db.get_user_by_username(username) or {"username": username, "role": "customer"}
 
 
-def reset_password(username: str, reset_code: str, password: str, confirm_password: str) -> bool:
-    """用服务端重置口令修改密码；失败时不暴露账号是否存在。"""
-    configured_code = Config.PASSWORD_RESET_CODE
-    if not configured_code or not hmac.compare_digest(reset_code, configured_code):
-        return False
+def request_password_reset(username: str, phone: str) -> dict:
+    """创建密码重置挑战；不因账号不存在而返回不同的错误。"""
+    username = (username or "").strip()
+    normalized_phone = normalize_phone(phone)
+    user = db.get_user_by_username(username)
+    valid = bool(
+        user and user.get("active", 1) and user.get("phone_verified_at")
+        and user.get("phone") == normalized_phone
+    )
+    code = Config.PHONE_VERIFICATION_TEST_CODE or f"{secrets.randbelow(1000000):06d}"
+    challenge_id = uuid.uuid4().hex
+    challenge = PasswordResetChallenge(
+        username=username,
+        phone=normalized_phone,
+        valid=valid,
+        expires_at=time.time() + Config.PHONE_VERIFICATION_TTL_SECONDS,
+        code_digest=_phone_code_digest(code),
+    )
+    with _PASSWORD_RESET_LOCK:
+        PASSWORD_RESET_CHALLENGES[challenge_id] = challenge
+
+    result = {
+        "status": "code_sent",
+        "challenge_id": challenge_id,
+        "phone_masked": mask_phone(normalized_phone) if valid else "已绑定手机号",
+        "expires_in": Config.PHONE_VERIFICATION_TTL_SECONDS,
+    }
+    if Config.DEMO_DATA_ENABLED and Config.PHONE_VERIFICATION_TEST_CODE:
+        result["demo_code"] = code
+    return result
+
+
+def verify_password_reset(
+    challenge_id: str, code: str, password: str, confirm_password: str,
+) -> bool:
+    """校验一次性重置挑战并更新密码；成功或失败后均不接受重复消费。"""
     if not validate_password(password) or password != confirm_password:
-        return False
-    if db.get_user_by_username(username.strip()) is None:
-        return False
-    return db.update_user_password(username.strip(), hash_password(password))
+        raise ValueError("重置失败，请检查密码格式和两次输入内容")
+    submitted_code = (code or "").strip()
+    if len(submitted_code) != 6 or not submitted_code.isdigit():
+        raise ValueError("验证码格式错误")
+
+    with _PASSWORD_RESET_LOCK:
+        challenge = PASSWORD_RESET_CHALLENGES.get(challenge_id)
+        if challenge is None or challenge.expires_at <= time.time():
+            PASSWORD_RESET_CHALLENGES.pop(challenge_id, None)
+            raise ValueError("验证码挑战不存在或已过期")
+        if not hmac.compare_digest(
+            challenge.code_digest, _phone_code_digest(submitted_code)
+        ):
+            challenge.attempts += 1
+            if challenge.attempts >= Config.PHONE_VERIFICATION_MAX_ATTEMPTS:
+                PASSWORD_RESET_CHALLENGES.pop(challenge_id, None)
+                raise ValueError("验证码错误次数过多，请重新申请")
+            raise ValueError("验证码错误")
+        PASSWORD_RESET_CHALLENGES.pop(challenge_id, None)
+
+    if not challenge.valid:
+        raise ValueError("重置失败，请检查账号和手机号")
+    user = db.get_user_by_username(challenge.username)
+    if not user or not user.get("active", 1) or user.get("phone") != challenge.phone:
+        raise ValueError("重置失败，请检查账号和手机号")
+    if not db.update_user_password(challenge.username, hash_password(password)):
+        raise ValueError("重置失败，请稍后重试")
+    try:
+        db.insert_account_audit(
+            challenge.username,
+            "password_reset",
+            "用户通过已绑定手机号重置密码",
+            "self-service",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("密码重置审计写入失败 username=%s: %s", challenge.username, exc)
+    delete_sessions_for_user(challenge.username)
+    return True
 
 
 def create_session(username: str) -> str:
@@ -376,6 +455,13 @@ def delete_session(token: str):
         redis_store.delete_session(token)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Redis 删除会话失败：%s", exc)
+
+
+def delete_sessions_for_user(username: str) -> None:
+    """密码重置成功后撤销当前进程中该用户的旧会话。"""
+    tokens = [token for token, session in SESSIONS.items() if session.username == username]
+    for token in tokens:
+        delete_session(token)
 
 
 def extract_token(authorization: str = "", session_token: str = "") -> str:

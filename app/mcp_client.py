@@ -6,6 +6,7 @@
 import asyncio
 import logging
 import os
+import re
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -22,6 +23,14 @@ MCP_READ_ONLY_TOOLS = frozenset({
     "query_logistics",
     "check_refund",
 })
+
+MCP_TOOL_ARGUMENTS = {
+    "list_my_orders": frozenset(),
+    "query_order": frozenset({"order_id"}),
+    "query_logistics": frozenset({"tracking_no"}),
+    "check_refund": frozenset({"order_id"}),
+}
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 class MCPClientError(RuntimeError):
@@ -124,6 +133,14 @@ def call_tool(username: str | None, name: str, arguments: dict[str, Any]) -> str
         raise MCPClientError("MCP 查询需要当前登录用户")
     if name not in MCP_READ_ONLY_TOOLS:
         raise MCPClientError(f"MCP 工具不在只读白名单中：{name}")
+    if not isinstance(arguments, dict):
+        raise MCPClientError("MCP 工具参数必须是对象")
+    allowed_arguments = MCP_TOOL_ARGUMENTS[name]
+    if set(arguments) != allowed_arguments:
+        raise MCPClientError(f"MCP 工具参数不符合约束：{name}")
+    for value in arguments.values():
+        if not isinstance(value, str) or not _IDENTIFIER_RE.fullmatch(value.strip()):
+            raise MCPClientError(f"MCP 工具参数不符合约束：{name}")
     try:
         result = _run(lambda: _call_tool_async(username.strip(), name, arguments))
     except Exception as exc:  # noqa: BLE001 - MCP 协议/子进程异常统一转业务错误

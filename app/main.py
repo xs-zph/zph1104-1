@@ -32,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import auth, config, db, events, feedback, memory, metrics, privacy, profile, rag, redis_store, router, sla, vision, wechat
 from app.config import setup_logging
-from app.schemas import FAQCreate, FAQUpdate, FeedbackRequest, FeedbackTagRequest, LoginOut, LoginRequest, ManagedPasswordReset, ManagedUserCreate, ManagedUserUpdate, OrderCreate, OrderUpdate, PasswordResetRequest, PhoneCodeSendRequest, PhoneCodeVerifyRequest, ProfileFactUpdate, RegisterRequest, ResolveRequest, TicketAssignRequest, TicketCreate, TicketStatusRequest
+from app.schemas import FAQCreate, FAQUpdate, FeedbackRequest, FeedbackTagRequest, LoginOut, LoginRequest, ManagedPasswordReset, ManagedUserCreate, ManagedUserUpdate, OrderCreate, OrderUpdate, PasswordResetChallengeRequest, PasswordResetRequest, PhoneCodeSendRequest, PhoneCodeVerifyRequest, ProfileFactUpdate, RegisterRequest, ResolveRequest, TicketAssignRequest, TicketCreate, TicketStatusRequest
 
 logger = logging.getLogger("app.main")
 
@@ -254,13 +254,24 @@ def register(payload: RegisterRequest, response: Response):
     }
 
 
+@app.post("/api/password-reset/request")
+def password_reset_request(payload: PasswordResetChallengeRequest):
+    """申请密码重置验证码；响应不暴露账号是否存在。"""
+    try:
+        return auth.request_password_reset(payload.username, payload.phone)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/password-reset")
 def password_reset(payload: PasswordResetRequest):
-    """使用服务端配置的重置口令修改密码。"""
-    if not auth.reset_password(
-        payload.username, payload.reset_code, payload.password, payload.confirm_password
-    ):
-        raise HTTPException(status_code=400, detail="重置失败，请检查信息后重试")
+    """校验一次性验证码并修改密码。"""
+    try:
+        auth.verify_password_reset(
+            payload.challenge_id, payload.code, payload.password, payload.confirm_password
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "ok"}
 
 

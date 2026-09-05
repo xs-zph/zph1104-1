@@ -13,14 +13,22 @@ from app.config import Config
 
 class VisionValidationTests(unittest.TestCase):
     def test_accepts_jpeg_signature(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (1, 1), "white").save(image, format="JPEG")
         self.assertEqual(
-            vision.validate_image("image/jpeg", b"\xff\xd8\xfffake"),
+            vision.validate_image("image/jpeg", image.getvalue()),
             "image/jpeg",
         )
 
     def test_rejects_mismatched_file_signature(self):
         with self.assertRaisesRegex(ValueError, "不匹配"):
             vision.validate_image("image/png", b"not-a-png")
+
+    def test_rejects_file_with_image_header_but_invalid_structure(self):
+        with self.assertRaisesRegex(ValueError, "无法解码"):
+            vision.validate_image("image/jpeg", b"\xff\xd8\xfffake")
 
     def test_rejects_oversized_image(self):
         with patch.object(Config, "MAX_IMAGE_BYTES", 4):
@@ -58,8 +66,12 @@ class UploadShapeTests(unittest.TestCase):
         self.assertEqual(upload.filename, "test.jpg")
 
     def test_text_is_preserved_when_vision_fails(self):
+        from PIL import Image
+
+        image_data = io.BytesIO()
+        Image.new("RGB", (1, 1), "white").save(image_data, format="JPEG")
         upload = UploadFile(
-            file=io.BytesIO(b"\xff\xd8\xfffake"),
+            file=io.BytesIO(image_data.getvalue()),
             filename="test.jpg",
             headers=Headers({"content-type": "image/jpeg"}),
         )

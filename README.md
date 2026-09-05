@@ -229,7 +229,8 @@ python scripts/run_demo.py      # 跑 20 张，打印分类准确率 / 自动处
 |------|------|------------|------|
 | POST | `/api/login` | 否 | 登录，由服务端设置 HttpOnly 会话 Cookie |
 | POST | `/api/register` | 否 | 注册普通客户账号并设置 HttpOnly 会话 Cookie |
-| POST | `/api/password-reset` | 否 | 使用服务端配置的重置口令修改密码 |
+| POST | `/api/password-reset/request` | 否 | 使用已绑定手机号申请密码重置验证码 |
+| POST | `/api/password-reset` | 否 | 校验一次性验证码并修改密码 |
 | POST | `/api/logout` | 是 | 登出 |
 | GET  | `/api/me` | 是 | 当前用户信息 |
 | GET  | `/api/profile` | 是 | 当前用户的实体画像事实卡片 |
@@ -249,7 +250,7 @@ python scripts/run_demo.py      # 跑 20 张，打印分类准确率 / 自动处
 
 人工接管规则：客户工单处于 `escalated`、`in_progress` 或 `waiting_customer` 时，客户后续文字/图片会追加到原工单消息线程，不会再次调用 AI；坐席通过 SSE 的 `customer_message` 事件实时收到补充内容。人工提交回答后工单变为 `resolved`，客户下一条新问题才会重新进入 AI 流程。
 
-注册页为 `/register`，忘记密码页为 `/forgot-password`。注册账号永远由服务端创建为 `customer`，不会接受前端传入的角色。密码重置使用服务端 `.env` 中的 `PASSWORD_RESET_CODE`；该配置为空时重置功能关闭，生产环境必须替换为随机强口令，后续可接入短信或邮件验证码。
+注册页为 `/register`，忘记密码页为 `/forgot-password`。注册账号永远由服务端创建为 `customer`，不会接受前端传入的角色。密码重置使用已核验手机号的一次性验证码，挑战在服务端保存摘要并限制有效期、错误次数和重复消费；演示模式返回测试码，生产环境应接入短信或邮件服务。
 
 ### 登录 + 提交工单示例
 

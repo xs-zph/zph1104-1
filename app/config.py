@@ -62,8 +62,6 @@ class Config:
     SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() in {
         "1", "true", "yes", "on"
     }
-    # P0 找回密码口令。生产环境必须通过 .env 配置随机强口令；后续可替换为短信/邮件验证码。
-    PASSWORD_RESET_CODE = os.getenv("PASSWORD_RESET_CODE", "")
     PHONE_VERIFICATION_TTL_SECONDS = int(os.getenv("PHONE_VERIFICATION_TTL_SECONDS", "300"))
     PHONE_VERIFICATION_MAX_ATTEMPTS = int(os.getenv("PHONE_VERIFICATION_MAX_ATTEMPTS", "5"))
 
