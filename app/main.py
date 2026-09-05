@@ -1150,7 +1150,7 @@ def health():
     return {
         "status": "ok",
         "model": config.Config.MODEL,
-        "api_key_configured": bool(config.Config.DEEPSEEK_API_KEY),
+        "api_key_configured": bool(config.Config.LLM_API_KEY or config.Config.DEEPSEEK_API_KEY),
         "vision_model": config.Config.VISION_MODEL or None,
         "vision_configured": bool(config.Config.VISION_MODEL and config.Config.VISION_API_KEY),
         "redis_configured": bool(config.Config.REDIS_URL),

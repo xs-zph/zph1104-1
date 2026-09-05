@@ -49,6 +49,18 @@ class LLMResilienceTests(unittest.TestCase):
 
         self.assertEqual(post.call_count, 2)
 
+    def test_openai_compatible_endpoint_can_run_with_local_model(self):
+        with patch.object(llm.Config, "LLM_API_KEY", ""), \
+             patch.object(llm.Config, "LLM_BASE_URL", "http://127.0.0.1:11434/v1"), \
+             patch.object(llm.Config, "MODEL", "qwen2.5:7b"), \
+             patch.object(llm.Config, "LLM_MAX_RETRIES", 0), \
+             patch.object(llm._session, "post", return_value=FakeResponse(200)) as post:
+            result = llm.complete("system", "question")
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(post.call_args.args[0], "http://127.0.0.1:11434/v1/chat/completions")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "qwen2.5:7b")
+
 
 if __name__ == "__main__":
     unittest.main()

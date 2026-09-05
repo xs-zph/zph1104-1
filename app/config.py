@@ -21,14 +21,18 @@ load_dotenv(BASE_DIR / ".env")
 class Config:
     """集中管理所有配置项，方便统一修改。"""
 
-    # ---- 大模型（DeepSeek，OpenAI 兼容接口）----
+    # ---- 大模型（默认 DeepSeek，可切换任意 OpenAI 兼容服务）----
     DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-    MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
     DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    # LLM_* 是通用覆盖项；未配置时完全兼容旧版 DEEPSEEK_* 配置。
+    LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+    LLM_MODEL = os.getenv("LLM_MODEL", "")
+    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
+    MODEL = LLM_MODEL or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
     # 图片识别使用独立视觉模型；留空时走人工降级。
     VISION_MODEL = os.getenv("VISION_MODEL", "")
-    VISION_BASE_URL = os.getenv("VISION_BASE_URL") or DEEPSEEK_BASE_URL
-    VISION_API_KEY = os.getenv("VISION_API_KEY") or DEEPSEEK_API_KEY
+    VISION_BASE_URL = os.getenv("VISION_BASE_URL") or LLM_BASE_URL or DEEPSEEK_BASE_URL
+    VISION_API_KEY = os.getenv("VISION_API_KEY") or LLM_API_KEY or DEEPSEEK_API_KEY
     MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(8 * 1024 * 1024)))
 
     # 企业部署基础设施；留空 Redis 时继续使用单机内存降级。

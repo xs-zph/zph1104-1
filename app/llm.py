@@ -1,4 +1,4 @@
-"""大模型调用模块：统一封装 DeepSeek API（OpenAI 兼容接口）。
+"""大模型调用模块：统一封装 OpenAI 兼容接口。
 
 整个系统里所有需要调用大模型的地方都通过这里，好处是：
   - 密钥、模型名、接口地址只在一处配置（config.py）
@@ -162,12 +162,12 @@ def _post_once(
             timeout=max(0.1, timeout_seconds),
         )
     except requests.RequestException as exc:
-        raise _UpstreamError(f"DeepSeek API 网络错误：{exc}", transient=True) from exc
+        raise _UpstreamError(f"模型服务网络错误：{exc}", transient=True) from exc
 
     if resp.status_code != 200:
         transient = resp.status_code == 408 or resp.status_code == 429 or resp.status_code >= 500
         raise _UpstreamError(
-            f"DeepSeek API 调用失败（HTTP {resp.status_code}）：{resp.text[:300]}",
+            f"模型服务调用失败（HTTP {resp.status_code}）：{resp.text[:300]}",
             transient=transient,
         )
     return resp.json()
@@ -213,14 +213,15 @@ def _call_api(messages: list, json_mode: bool = False, max_tokens: int = 1024,
               model: str | None = None, base_url: str | None = None,
               api_key: str | None = None) -> dict:
     """将一次大模型调用提交到有界队列，并返回完整响应 dict。"""
-    api_key = api_key or config.Config.DEEPSEEK_API_KEY
-    if not api_key:
+    configured_base_url = base_url or config.Config.LLM_BASE_URL
+    api_key = api_key or config.Config.LLM_API_KEY or config.Config.DEEPSEEK_API_KEY
+    if not api_key and not configured_base_url:
         raise RuntimeError(
-            "未检测到 API 密钥：请在项目根目录创建 .env 文件，并填写 "
-            "DEEPSEEK_API_KEY=sk-... （可参考 .env.example）"
+            "未检测到模型服务配置：请填写 LLM_API_KEY 或兼容服务的 LLM_BASE_URL "
+            "（可参考 .env.example）"
         )
 
-    url = (base_url or config.Config.DEEPSEEK_BASE_URL).rstrip("/") + "/chat/completions"
+    url = (configured_base_url or config.Config.DEEPSEEK_BASE_URL).rstrip("/") + "/chat/completions"
     payload = {
         "model": model or config.Config.MODEL,
         "messages": messages,
@@ -233,7 +234,7 @@ def _call_api(messages: list, json_mode: bool = False, max_tokens: int = 1024,
     if tools:
         payload["tools"] = tools
 
-    logger.info("提交大模型任务（model=%s）", model or config.Config.MODEL)
+    logger.info("提交模型任务（model=%s, base_url=%s）", model or config.Config.MODEL, url)
     try:
         future = _executor.submit(_perform_api_call, url, payload, api_key)
     except QueueFullError as exc:
@@ -286,7 +287,7 @@ def complete_vision(system: str, user: str, image_data: bytes,
 
 def complete(system: str, user: str, json_mode: bool = False, max_tokens: int = 1024,
              temperature: float = 0.1, history: list | None = None):
-    """单轮调用 DeepSeek，返回结果。
+    """单轮调用 OpenAI 兼容模型，返回结果。
 
     参数：
       system      系统提示词（设定角色、规则）

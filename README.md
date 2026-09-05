@@ -147,6 +147,11 @@ DEEPSEEK_API_KEY=sk-你的密钥
 DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 
+# 可选：切换到 Ollama / vLLM 等 OpenAI 兼容服务
+# LLM_MODEL=qwen2.5:7b
+# LLM_BASE_URL=http://127.0.0.1:11434/v1
+# LLM_API_KEY=
+
 # MySQL 数据库（需先创建好 MySQL 服务）
 MYSQL_HOST=localhost
 MYSQL_PORT=3308
@@ -161,6 +166,10 @@ CONFIDENCE_THRESHOLD=0.85
 MCP_ENABLED=true
 MCP_TIMEOUT_SECONDS=8
 ```
+
+`LLM_*` 配置优先级高于旧版 `DEEPSEEK_*` 配置，模型调用接口保持 OpenAI
+`/chat/completions` 兼容格式。开发环境可以使用本地 Ollama/vLLM，生产环境
+仍可继续使用 DeepSeek；图片识别还可通过 `VISION_*` 单独指定视觉模型。
 
 > 密钥申请：https://platform.deepseek.com
 > 数据库会由程序自动创建（`ai_ticket` 库 + `tickets`/`users` 表）。
