@@ -206,7 +206,8 @@ python scripts/seed_demo_data.py
 配置 `REDIS_URL` 后，登录会话会保存到 Redis，实时转人工事件通过 Redis Pub/Sub
 跨应用进程广播；未配置时仍可使用单机内存模式。数据库默认使用有界连接池，
 可通过 `DB_POOL_SIZE` 和 `DB_POOL_TIMEOUT_SECONDS` 调整。每个 HTTP 响应都会返回
-`X-Request-ID`，可用来关联应用日志和前端报错。
+`X-Request-ID`，可用来关联应用日志和前端报错。开发环境可执行
+`pip install -r requirements-dev.txt`，再运行 `pytest`；现有 `unittest` 回归也可继续使用。
 
 大模型调用默认使用 4 个 worker 和 32 个排队位。`LLM_REQUEST_TIMEOUT_SECONDS`
 控制单次上游请求时限，`LLM_TOTAL_TIMEOUT_SECONDS` 控制一次任务总时限；408、429
