@@ -264,7 +264,7 @@ def list_entries(include_disabled: bool = False) -> list[dict]:
     return db.list_faq_entries(enabled_only=not include_disabled)
 
 
-def add_entry(question: str, answer: str) -> dict:
+def add_entry(question: str, answer: str, operator: str = "system") -> dict:
     """实时新增一条知识：写入 MySQL + 同步向量库，无需重启即可被检索。"""
     question = (question or "").strip()
     answer = (answer or "").strip()
@@ -272,37 +272,50 @@ def add_entry(question: str, answer: str) -> dict:
         raise ValueError("问题和答案都不能为空")
 
     faq_id = db.insert_faq_entry(question, answer)
+    entry = db.get_faq_entry(faq_id) or {
+        "id": faq_id, "question": question, "answer": answer, "enabled": 1,
+    }
+    db.insert_faq_audit(faq_id, "created", question, answer, True, operator)
     sync_faq_to_chroma()
     logger.info("实时新增知识成功：#%d %s", faq_id, question)
-    return {"id": faq_id, "question": question, "answer": answer, "enabled": 1}
+    return entry
 
 
 def update_entry(faq_id: int, question: str | None = None,
-                 answer: str | None = None) -> dict:
+                 answer: str | None = None, operator: str = "system") -> dict:
     """编辑一条知识库条目（问题/答案可部分更新），并同步向量库。"""
     entry = db.update_faq_entry(faq_id, question=question, answer=answer)
     if entry is None:
         raise ValueError(f"知识条目 #{faq_id} 不存在")
+    db.insert_faq_audit(
+        faq_id, "updated", entry["question"], entry["answer"], bool(entry.get("enabled", 1)), operator,
+    )
     sync_faq_to_chroma()
     logger.info("知识条目 #%d 已更新", faq_id)
     return entry
 
 
-def disable_entry(faq_id: int) -> dict:
+def disable_entry(faq_id: int, operator: str = "system") -> dict:
     """软删除一条知识库条目（enabled 置 0，从向量库移除，但保留数据可恢复）。"""
     entry = db.set_faq_enabled(faq_id, False)
     if entry is None:
         raise ValueError(f"知识条目 #{faq_id} 不存在")
+    db.insert_faq_audit(
+        faq_id, "disabled", entry["question"], entry["answer"], False, operator,
+    )
     sync_faq_to_chroma()
     logger.info("知识条目 #%d 已软删除", faq_id)
     return entry
 
 
-def enable_entry(faq_id: int) -> dict:
+def enable_entry(faq_id: int, operator: str = "system") -> dict:
     """重新启用一条被软删除的知识库条目。"""
     entry = db.set_faq_enabled(faq_id, True)
     if entry is None:
         raise ValueError(f"知识条目 #{faq_id} 不存在")
+    db.insert_faq_audit(
+        faq_id, "restored", entry["question"], entry["answer"], True, operator,
+    )
     sync_faq_to_chroma()
     logger.info("知识条目 #%d 已重新启用", faq_id)
     return entry

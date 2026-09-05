@@ -968,7 +968,7 @@ def reply_escalation(ticket_id: int, payload: ResolveRequest,
         "saved_to_kb": False,
     }
     if payload.save_to_kb:
-        rag.add_entry(ticket["ticket_text"], answer)
+        rag.add_entry(ticket["ticket_text"], answer, operator=username)
         result["saved_to_kb"] = True
     return result
 
@@ -1004,7 +1004,7 @@ def resolve_escalation(ticket_id: int, payload: ResolveRequest,
 
     result = {"status": "ok", "id": ticket_id, "saved_to_kb": False}
     if answer and payload.save_to_kb:
-        rag.add_entry(ticket["ticket_text"], answer)
+        rag.add_entry(ticket["ticket_text"], answer, operator=username)
         result["saved_to_kb"] = True
     return result
 
@@ -1089,7 +1089,7 @@ def list_faq(include_disabled: bool = False, username: str = Depends(auth.requir
 def add_faq(payload: FAQCreate, username: str = Depends(auth.require_admin)):
     """实时新增一条知识：写入 MySQL 并同步向量库，无需重启即可生效。"""
     try:
-        return rag.add_entry(payload.question, payload.answer)
+        return rag.add_entry(payload.question, payload.answer, operator=username)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1098,16 +1098,24 @@ def add_faq(payload: FAQCreate, username: str = Depends(auth.require_admin)):
 def update_faq(faq_id: int, payload: FAQUpdate, username: str = Depends(auth.require_admin)):
     """编辑一条知识库条目（问题/答案可部分更新），并同步向量库。"""
     try:
-        return rag.update_entry(faq_id, question=payload.question, answer=payload.answer)
+        return rag.update_entry(faq_id, question=payload.question, answer=payload.answer, operator=username)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/faq/{faq_id}/history")
+def faq_history(faq_id: int, username: str = Depends(auth.require_admin)):
+    """查看单条知识库 FAQ 的内容变更历史（仅管理员）。"""
+    if db.get_faq_entry(faq_id) is None:
+        raise HTTPException(status_code=404, detail="知识条目不存在")
+    return db.list_faq_audits(faq_id)
 
 
 @app.delete("/api/faq/{faq_id}")
 def disable_faq(faq_id: int, username: str = Depends(auth.require_admin)):
     """软删除一条知识库条目（从向量库移除，数据保留可恢复）。"""
     try:
-        return rag.disable_entry(faq_id)
+        return rag.disable_entry(faq_id, operator=username)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -1116,7 +1124,7 @@ def disable_faq(faq_id: int, username: str = Depends(auth.require_admin)):
 def restore_faq(faq_id: int, username: str = Depends(auth.require_admin)):
     """重新启用一条被软删除的知识库条目。"""
     try:
-        return rag.enable_entry(faq_id)
+        return rag.enable_entry(faq_id, operator=username)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

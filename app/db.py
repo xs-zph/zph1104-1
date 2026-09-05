@@ -99,6 +99,21 @@ CREATE TABLE IF NOT EXISTS faq_entries (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# FAQ 变更快照：保留操作者和内容版本，便于审计与人工回滚。
+_FAQ_AUDIT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS faq_audit_logs (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    faq_id      INT NOT NULL,
+    action      VARCHAR(32) NOT NULL, -- created / updated / disabled / restored
+    question    TEXT NOT NULL,
+    answer      TEXT NOT NULL,
+    enabled     TINYINT(1) NOT NULL,
+    operator    VARCHAR(64) NOT NULL,
+    created_at  DATETIME NOT NULL,
+    INDEX idx_faq_audit (faq_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 # 用户表（登录用）
 _USERS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -330,6 +345,7 @@ def init_db():
             cur.execute(_TICKET_MESSAGES_SCHEMA)
             cur.execute(_FEEDBACK_TAGS_SCHEMA)
             cur.execute(_FAQ_ENTRIES_SCHEMA)
+            cur.execute(_FAQ_AUDIT_SCHEMA)
             cur.execute(_PROFILE_FACTS_SCHEMA)
             cur.execute(_AGENT_BLACKBOARD_SCHEMA)
             cur.execute(_CONVERSATION_STATE_SCHEMA)
@@ -1528,6 +1544,40 @@ def count_faq_entries() -> int:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) AS n FROM faq_entries")
             return cur.fetchone()["n"]
+    finally:
+        conn.close()
+
+
+def insert_faq_audit(faq_id: int, action: str, question: str, answer: str,
+                     enabled: bool, operator: str) -> int:
+    """记录 FAQ 内容快照和变更操作者。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO faq_audit_logs "
+                "(faq_id, action, question, answer, enabled, operator, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (faq_id, action, question, answer, 1 if enabled else 0, operator,
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def list_faq_audits(faq_id: int, limit: int = 50) -> list[dict]:
+    """按知识条目查询变更历史，最新版本在前。"""
+    limit = max(1, min(int(limit), 200))
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM faq_audit_logs WHERE faq_id = %s "
+                "ORDER BY id DESC LIMIT %s",
+                (faq_id, limit),
+            )
+            return cur.fetchall()
     finally:
         conn.close()
 

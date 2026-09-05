@@ -969,6 +969,9 @@ a { text-decoration: none; color: inherit; }
 .faq-item-actions { margin-top: 9px; display: flex; gap: 8px; justify-content: flex-end; }
 .faq-item.disabled { opacity: 0.55; }
 .faq-item.disabled .faq-q { text-decoration: line-through; }
+.faq-audit-snapshot { padding: 10px 2px 2px; color: var(--text-2); font-size: 13px; line-height: 1.6; }
+.faq-audit-snapshot p { margin: 5px 0; white-space: pre-wrap; }
+.faq-audit-snapshot span { color: var(--text-3); font-size: 12px; }
 
 @media (max-width: 800px) {
   .stats-grid { grid-template-columns: 1fr; }

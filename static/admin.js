@@ -79,9 +79,19 @@ async function loadFaq() {
   faqEntries = await api("/api/faq?include_disabled=true");
   const enabled = faqEntries.filter((entry) => entry.enabled).length;
   $("faq-count").textContent = `${enabled}/${faqEntries.length} 条启用`;
-  $("faq-list").innerHTML = faqEntries.map((entry) => `<article class="faq-item ${entry.enabled ? "" : "disabled"}"><div class="faq-q">${escapeHtml(entry.question)}</div><div class="faq-a">${escapeHtml(entry.answer)}</div><div class="faq-item-actions"><span class="panel-tip">${entry.enabled ? "已启用" : "已停用"}</span><button class="btn btn-ghost btn-sm" data-faq-edit="${entry.id}">编辑</button><button class="btn btn-ghost btn-sm" data-faq-toggle="${entry.id}" data-enabled="${entry.enabled ? "1" : "0"}">${entry.enabled ? "停用" : "恢复"}</button></div></article>`).join("") || '<div class="empty">暂无知识条目</div>';
+  $("faq-list").innerHTML = faqEntries.map((entry) => `<article class="faq-item ${entry.enabled ? "" : "disabled"}"><div class="faq-q">${escapeHtml(entry.question)}</div><div class="faq-a">${escapeHtml(entry.answer)}</div><div class="faq-item-actions"><span class="panel-tip">${entry.enabled ? "已启用" : "已停用"}</span><button class="btn btn-ghost btn-sm" data-faq-history="${entry.id}">历史</button><button class="btn btn-ghost btn-sm" data-faq-edit="${entry.id}">编辑</button><button class="btn btn-ghost btn-sm" data-faq-toggle="${entry.id}" data-enabled="${entry.enabled ? "1" : "0"}">${entry.enabled ? "停用" : "恢复"}</button></div></article>`).join("") || '<div class="empty">暂无知识条目</div>';
   $("faq-list").querySelectorAll("[data-faq-edit]").forEach((button) => button.addEventListener("click", () => editFaq(faqEntries.find((entry) => String(entry.id) === button.dataset.faqEdit))));
+  $("faq-list").querySelectorAll("[data-faq-history]").forEach((button) => button.addEventListener("click", () => showFaqHistory(button.dataset.faqHistory)));
   $("faq-list").querySelectorAll("[data-faq-toggle]").forEach((button) => button.addEventListener("click", () => toggleFaq(button.dataset.faqToggle, button.dataset.enabled === "1")));
+}
+async function showFaqHistory(id) {
+  const detail = $("faq-history-detail"); detail.classList.remove("hidden"); detail.innerHTML = '<div class="empty">加载知识变更历史...</div>';
+  const actionNames = { created: "新增", updated: "编辑", disabled: "停用", restored: "恢复" };
+  try {
+    const rows = await api(`/api/faq/${id}/history`);
+    detail.innerHTML = `<div class="agent-detail-head"><b>知识 #${escapeHtml(id)} 的变更历史</b><button class="btn btn-ghost btn-sm" id="close-faq-history">关闭</button></div>${rows.length ? rows.map((row) => `<details class="agent-event" open><summary>${escapeHtml(actionNames[row.action] || row.action)} · ${escapeHtml(row.operator)} · ${escapeHtml(row.created_at || "")}</summary><div class="faq-audit-snapshot"><b>问题：${escapeHtml(row.question)}</b><p>答案：${escapeHtml(row.answer)}</p><span>${row.enabled ? "该版本启用" : "该版本停用"}</span></div></details>`).join("") : '<div class="empty">暂无变更记录</div>'}`;
+    $("close-faq-history").addEventListener("click", () => detail.classList.add("hidden"));
+  } catch (error) { detail.innerHTML = `<div class="empty error-text">${escapeHtml(error.message)}</div>`; }
 }
 async function toggleFaq(id, enabled) {
   try {
