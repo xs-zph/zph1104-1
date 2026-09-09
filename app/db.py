@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS tickets (
     reason        TEXT,               -- 分类理由（模型自述）
     status        VARCHAR(16),        -- auto（自动）/ escalated（人工）
     reply         TEXT,               -- 系统回复内容
-    reply_source  VARCHAR(16),        -- template / rag / agent / chat / escalate
+    reply_source  VARCHAR(16),        -- template / rag / agent / chat / escalate / service_error
     human_answer  TEXT,               -- 人工客服的回答（升级工单处理后填写）
     latency_ms    INT,                -- 处理耗时（毫秒）
     phone         VARCHAR(32),        -- 客户联系电话（若有）

@@ -372,6 +372,12 @@ class EntityArchiveTests(unittest.TestCase):
         self.assertNotIn("username", archive["objects"]["orders"][0])
         self.assertNotIn("secret", archive["objects"]["orders"][0])
         self.assertNotIn("assigned_to", archive["objects"]["tickets"][0])
+        self.assertEqual(archive["objects"]["tickets"][0]["topic"], "售后进度")
+        self.assertEqual(archive["objects"]["tickets"][0]["status_label"], "人工处理中")
+        self.assertNotIn("id", archive["objects"]["tickets"][0])
+        self.assertNotIn("category", archive["objects"]["tickets"][0])
+        self.assertNotIn("status", archive["objects"]["tickets"][0])
+        self.assertNotIn("ticket_text", archive["objects"]["tickets"][0])
 
 
 if __name__ == "__main__":

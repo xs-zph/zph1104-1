@@ -9,6 +9,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
 from app import db
+from app import rag
+from app import rag_eval
 
 
 def overview() -> dict:
@@ -151,4 +153,21 @@ def manager_dashboard(days: int = 7) -> dict:
         "sla_breached": len(breached),
         "agent_performance": sorted(by_agent.values(), key=lambda item: (-item["handled"], item["agent"])),
         "daily_workload": trend,
+        "rag_quality": rag_quality(),
+    }
+
+
+def rag_quality() -> dict:
+    """返回离线检索质量和线上缓存节省情况。"""
+    try:
+        evaluation = rag_eval.evaluate()
+    except Exception:
+        evaluation = {}
+    return {
+        "recall_at_5": evaluation.get("recall_at_k"),
+        "precision_at_3": evaluation.get("precision_at_k"),
+        "hit_rate": evaluation.get("hit_rate"),
+        "case_count": evaluation.get("case_count", 0),
+        "guard_pass_rate": evaluation.get("guard_pass_rate"),
+        "cache": rag.cache_stats(),
     }

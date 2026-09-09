@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>智能客服</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260903-8" />
+  <link rel="stylesheet" href="/static/style.css?v=20260910-sidebar-return" />
 </head>
 <body class="chat-body">
   <div class="chat-app">
@@ -14,46 +14,49 @@
     </div>
     <aside class="chat-sidebar">
       <div class="sidebar-brand">
-        <div class="sidebar-logo">AI</div>
-        <div><div class="sidebar-title">智能客服</div><div class="sidebar-sub">日常咨询与售后协助</div></div>
+        <div class="sidebar-logo"><span>AI</span><i></i></div>
+        <div><div class="sidebar-title">智能服务台</div><div class="sidebar-sub">订单 · 售后 · 人工协助</div></div>
       </div>
       <div class="sidebar-section sidebar-account">
-        <div class="sidebar-label">我的服务</div>
-        <strong id="current-username">—</strong>
+        <div class="sidebar-label"><span>MY SERVICE</span><i class="sidebar-live-dot"></i></div>
+        <div class="sidebar-user-line"><span class="sidebar-avatar" id="sidebar-avatar">U</span><strong id="current-username">—</strong></div>
+        <div class="sidebar-account-status"><i></i> 当前会话已连接</div>
         <a class="archive-link" href="/profile">查看我的服务档案 <span aria-hidden="true">→</span></a>
       </div>
       <div class="sidebar-section">
-        <div class="sidebar-label">常用服务</div>
+        <div class="sidebar-label"><span>QUICK ACCESS</span><span class="sidebar-count">03</span></div>
         <div class="quick-list">
-          <button class="quick-q" data-q="我的快递到哪了？" type="button"><span>物流进度</span><b aria-hidden="true">→</b></button>
-          <button class="quick-q" data-q="帮我查一下我的订单" type="button"><span>我的订单</span><b aria-hidden="true">→</b></button>
-          <button class="quick-q" data-q="我提交的售后工单进度怎么样了？" type="button"><span>售后进度</span><b aria-hidden="true">→</b></button>
+          <button class="quick-q" data-q="我的快递到哪了？" type="button"><i class="quick-icon">↗</i><span><b>物流进度</b><small>查看包裹当前位置</small></span><strong aria-hidden="true">→</strong></button>
+          <button class="quick-q" data-q="帮我查一下我的订单" type="button"><i class="quick-icon">▣</i><span><b>我的订单</b><small>查看订单与状态</small></span><strong aria-hidden="true">→</strong></button>
+          <button class="quick-q" data-q="我提交的售后工单进度怎么样了？" type="button"><i class="quick-icon">+</i><span><b>售后进度</b><small>跟进维修与售后</small></span><strong aria-hidden="true">→</strong></button>
         </div>
       </div>
-      <div class="sidebar-footer"><button class="btn btn-ghost btn-block" id="logout-btn" type="button">退出登录</button></div>
+      <div class="sidebar-note"><span class="sidebar-note-mark">i</span><p>复杂问题会自动转接人工客服，服务记录全程保留。</p></div>
+      <div class="sidebar-footer"><button class="btn btn-ghost btn-block" id="logout-btn" type="button"><span>退出当前账号</span><b aria-hidden="true">↗</b></button></div>
     </aside>
     <main class="chat-main">
       <header class="chat-header">
-        <div class="chat-header-info"><span class="chat-status-dot"></span><strong>AI 客服小助手</strong></div>
+        <div class="chat-header-info"><span class="chat-status-dot"></span><div><strong>AI 客服小助手</strong><small>智能服务在线 · 随时为您解答</small></div></div>
         <div class="chat-header-actions">
-          <div class="chat-header-tip">复杂问题可随时转人工</div>
+          <div class="chat-header-tip"><span>●</span> 复杂问题可随时转人工</div>
           <button class="btn btn-ghost" id="end-human-session-btn" type="button" hidden>结束人工会话</button>
-          <button class="btn btn-ghost" id="new-chat-btn" type="button">＋ 新对话</button>
+          <button class="btn btn-ghost new-chat-button" id="new-chat-btn" type="button"><span aria-hidden="true">＋</span> 新对话</button>
         </div>
       </header>
+      <div class="chat-context-strip"><span class="context-pulse"></span><span>当前对话</span><b>AI 服务通道</b><i></i><small>支持订单、物流、退换货与售后问题</small></div>
       <div class="chat-messages" id="chat-messages"></div>
       <div class="chat-input-area">
         <form id="chat-form" class="chat-form" autocomplete="off">
           <input id="image-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden>
-          <button class="icon-btn image-upload-btn" id="image-upload-btn" type="button" title="上传图片识别" aria-label="上传图片识别">📎</button>
-          <textarea id="chat-input" rows="1" placeholder="输入问题，例如：我的快递到哪了？"></textarea>
-          <button type="submit" class="btn btn-primary" id="send-btn">发送</button>
+          <button class="icon-btn image-upload-btn" id="image-upload-btn" type="button" title="上传图片识别" aria-label="上传图片识别">⌁</button>
+          <div class="chat-textarea-shell"><span class="input-prompt">ASK</span><textarea id="chat-input" rows="1" placeholder="输入问题，例如：我的快递到哪了？"></textarea><span class="input-hint">Enter 发送 · Shift + Enter 换行</span></div>
+          <button type="submit" class="btn btn-primary send-button" id="send-btn"><span>发送</span><b aria-hidden="true">→</b></button>
         </form>
         <div class="image-preview" id="image-preview" aria-live="polite" hidden></div>
-        <div class="chat-disclaimer">回答仅供参考，订单和售后状态以页面显示为准</div>
+        <div class="chat-disclaimer"><span>SECURE SERVICE CHANNEL</span> · 回答仅供参考，订单和售后状态以页面显示为准</div>
       </div>
     </main>
   </div>
-  <script src="/static/app.js?v=20260903-8"></script>
+  <script src="/static/app.js?v=20260910-customer-safe"></script>
 </body>
 </html>

@@ -626,16 +626,69 @@ def get_entity_archive(username: str = Depends(auth.require_user)):
             "order_id", "product", "status", "tracking_no", "logistics", "refund_status", "created_at"
         )}
 
+    status_names = {
+        "auto": "已自动处理",
+        "closed": "已完成",
+        "resolved": "已解决",
+        "escalated": "等待人工处理",
+        "in_progress": "人工处理中",
+        "waiting_customer": "等待您补充信息",
+    }
+    active_statuses = {"escalated", "in_progress", "waiting_customer"}
+    completed_statuses = {"resolved", "closed"}
+    business_keywords = (
+        "退款", "退钱", "退货", "换货", "售后", "维修", "报修", "质量", "损坏",
+        "投诉", "赔偿", "纠纷", "人工",
+    )
+
+    def is_customer_ticket(ticket: dict) -> bool:
+        status = ticket.get("status") or ""
+        category = ticket.get("category") or ""
+        text = str(ticket.get("ticket_text") or "")
+        if status in active_statuses:
+            return True
+        if status not in completed_statuses:
+            return False
+        if category in {"退款纠纷", "退货申请", "售后维修"}:
+            return True
+        return category == "人工处理工单" and any(k in text for k in business_keywords)
+
+    def customer_category(ticket: dict) -> str:
+        category = ticket.get("category") or ""
+        text = str(ticket.get("ticket_text") or "")
+        if "工单" in text or "售后进度" in text:
+            return "售后进度"
+        if category == "人工处理工单":
+            if any(k in text for k in ("退款", "退钱")):
+                return "退款问题"
+            if any(k in text for k in ("物流", "快递", "运单")):
+                return "物流查询"
+            if any(k in text for k in ("退货", "换货")):
+                return "退换货问题"
+            if any(k in text for k in ("维修", "售后", "质量", "损坏")):
+                return "售后服务"
+        return {
+            "退款纠纷": "退款问题",
+            "退货申请": "退换货问题",
+            "售后维修": "售后服务",
+        }.get(category, "售后进度")
+
     def public_ticket(ticket: dict) -> dict:
-        return {key: ticket.get(key) for key in (
-            "id", "category", "status", "ticket_text", "created_at"
-        )}
+        summary = " ".join(str(ticket.get("ticket_text") or "").split())
+        if len(summary) > 42:
+            summary = summary[:42] + "…"
+        return {
+            "topic": customer_category(ticket),
+            "status_label": status_names.get(ticket.get("status"), "处理中"),
+            "summary": summary,
+            "created_at": ticket.get("created_at"),
+        }
 
     return {
         "subject": {"username": username, "facts": facts},
         "objects": {
             "orders": [public_order(order) for order in orders],
-            "tickets": [public_ticket(ticket) for ticket in tickets],
+            "tickets": [public_ticket(ticket) for ticket in tickets if is_customer_ticket(ticket)][:5],
         },
     }
 
@@ -652,7 +705,9 @@ def _save_ticket_record(record: dict, username: str) -> dict:
         )
     persisted = {
         key: value for key, value in record.items()
-        if key not in {"image_analysis", "image_analysis_status", "ocr_text", "ocr_status"}
+        if key not in {
+            "image_analysis", "image_analysis_status", "ocr_text", "ocr_status", "quick_replies",
+        }
     }
     ticket_id = router.save_processed(persisted)
     record["id"] = ticket_id
@@ -1032,6 +1087,14 @@ def resolve_escalation(ticket_id: int, payload: ResolveRequest,
 def get_metrics(username: str = Depends(auth.require_manager)):
     """经理仪表盘核心指标。"""
     return metrics.manager_dashboard()
+
+
+@app.get("/api/rag/evaluation")
+def get_rag_evaluation(username: str = Depends(auth.require_manager)):
+    """经理查看可重复的离线 FAQ 检索评测明细。"""
+    from app import rag_eval
+
+    return rag_eval.evaluate()
 
 
 @app.get("/api/stats")

@@ -1,0 +1,8 @@
+{"id":"return_window","question":"我收到货后几天内可以退货？","expected_questions":["退货需要满足什么条件？"]}
+{"id":"warranty","question":"坏了能保修多久？","expected_questions":["产品保修期是多长时间？"]}
+{"id":"refund_time","question":"退款一般什么时候到账？","expected_questions":["退款多久能到账？"]}
+{"id":"shipping","question":"下单以后多久发货？","expected_questions":["多久发货？"]}
+{"id":"invoice","question":"电子发票怎么开？","expected_questions":["商品可以开发票吗？"]}
+{"id":"after_sale","question":"商品有故障要怎么申请维修？","expected_questions":["申请售后维修的流程是什么？"]}
+{"id":"logistics_live_data_guard","question":"我的包裹现在到哪儿了？","expected_questions":[],"expect_faq":false}
+{"id":"address","question":"还没发货可以改收货地址吗？","expected_questions":["可以修改收货地址吗？"]}

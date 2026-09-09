@@ -53,7 +53,7 @@ function renderOrders(orders) {
 function renderTickets(tickets) {
   document.getElementById("ticket-count").textContent = tickets.length;
   if (!tickets.length) { ticketList.innerHTML = '<div class="archive-empty">暂无售后工单。</div>'; return; }
-  ticketList.innerHTML = tickets.map((ticket) => `<article class="object-card ticket-card"><div class="object-card-head"><strong>${escapeHtml(ticket.category || "客服咨询")}</strong><span class="state ${statusClass(ticket.status)}">${escapeHtml(ticket.status || "未知")}</span></div><div class="object-id">工单 #${escapeHtml(ticket.id)}</div><p>${escapeHtml(ticket.ticket_text || "暂无描述")}</p></article>`).join("");
+  ticketList.innerHTML = tickets.map((ticket) => `<article class="object-card ticket-card"><div class="object-card-head"><strong>${escapeHtml(ticket.topic || "售后进度")}</strong><span class="state">${escapeHtml(ticket.status_label || "处理中")}</span></div><p>${escapeHtml(ticket.summary || "暂无描述")}</p>${ticket.created_at ? `<small>提交时间：${escapeHtml(String(ticket.created_at).slice(0, 16))}</small>` : ""}</article>`).join("");
 }
 async function loadArchive() {
   try {

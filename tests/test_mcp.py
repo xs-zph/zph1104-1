@@ -72,6 +72,67 @@ class MCPAdapterTests(unittest.TestCase):
         }
         self.assertIn("query_logistics", names)
 
+    def test_deterministic_logistics_query_lists_orders_before_answering(self):
+        mcp_tool = {"type": "function", "function": {"name": "list_my_orders"}}
+        payload = json.dumps({"orders": [{
+            "order_id": "A100", "product": "耳机", "status": "已发货",
+            "tracking_no": "SF100", "logistics": "已到达长沙分拨中心",
+            "refund_status": None,
+        }]}, ensure_ascii=False)
+        with patch.object(agent.mcp_client, "list_tools", return_value=[mcp_tool]), \
+             patch.object(agent.mcp_client, "call_tool", return_value=payload) as call:
+            reply = agent.run_data_query("我的快递到哪了？", "user")
+
+        self.assertIn("已到达长沙分拨中心", reply)
+        call.assert_called_once_with("user", "list_my_orders", {})
+
+    def test_deterministic_logistics_query_falls_back_to_builtin_tool(self):
+        with patch.object(agent.mcp_client, "list_tools", side_effect=RuntimeError("offline")), \
+             patch.object(agent, "_list_my_orders", return_value="我的订单 A100，物流：运输中") as builtin:
+            reply = agent.run_data_query("我的快递到哪了？", "user")
+
+        self.assertIn("运输中", reply)
+        builtin.assert_called_once_with("user")
+
+    def test_my_tickets_are_rendered_for_customers_not_as_internal_fields(self):
+        tickets = [
+            {
+                "id": 274,
+                "ticket_text": "我的退款进度怎么样了？",
+                "category": "人工处理工单",
+                "status": "closed",
+                "created_at": "2026-09-10 10:20:00",
+            },
+            {
+                "id": 273,
+                "ticket_text": "我提交的售后工单进度怎么样了？",
+                "category": "售后维修",
+                "status": "in_progress",
+                "created_at": "2026-09-10 10:19:00",
+            },
+        ]
+        with patch.object(agent.db, "list_tickets_for_user", return_value=tickets):
+            reply = agent._check_my_tickets("user")
+
+        self.assertIn("退款问题：已完成", reply)
+        self.assertIn("售后进度：人工处理中", reply)
+        self.assertNotIn("工单#274", reply)
+        self.assertNotIn("status：closed", reply)
+        self.assertNotIn("status：auto", reply)
+
+    def test_my_tickets_hide_chat_and_faq_records(self):
+        tickets = [
+            {"id": 1, "ticket_text": "你好", "category": "闲聊", "status": "auto"},
+            {"id": 2, "ticket_text": "退款多久能到账？", "category": "知识库命中", "status": "auto"},
+            {"id": 3, "ticket_text": "商品质量问题", "category": "售后维修", "status": "closed"},
+        ]
+        with patch.object(agent.db, "list_tickets_for_user", return_value=tickets):
+            reply = agent._check_my_tickets("user")
+
+        self.assertIn("售后服务：已完成", reply)
+        self.assertNotIn("你好", reply)
+        self.assertNotIn("退款多久能到账", reply)
+
     def test_agent_passes_session_identity_outside_model_arguments(self):
         mcp_tool = {
             "type": "function",

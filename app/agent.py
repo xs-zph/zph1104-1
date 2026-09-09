@@ -10,6 +10,7 @@
   数据。实现上靠「服务端注入身份」——大模型只能决定「查哪个订单号」，
   但真正查库时服务端强制限定在当前用户名下，模型无法伪造身份越权查询他人订单。
 """
+import json
 import logging
 
 from app import config, daily, db, llm, mcp_client, memory, profile, rag, skills
@@ -247,10 +248,90 @@ def _check_my_tickets(username: str | None) -> str:
         return "当前会话未登录，无法查询工单"
     tickets = db.list_tickets_for_user(username)
     if not tickets:
-        return "您暂时没有提交过工单"
-    return "；".join(
-        f"工单#{t['id']}（{t['category'] or '未分类'}，状态：{t['status']}）" for t in tickets
+        return "您目前没有正在处理的售后或人工工单。"
+    category_names = {
+        "人工处理工单": "人工服务",
+        "自助查询": "订单/物流查询",
+        "知识库命中": "常见问题咨询",
+        "退款纠纷": "退款问题",
+        "退款咨询": "退款咨询",
+        "闲聊": "一般咨询",
+        "商品咨询": "商品咨询",
+        "售后维修": "售后服务",
+        "退货申请": "退货申请",
+        "物流查询": "物流查询",
+        "发票问题": "发票问题",
+    }
+    status_names = {
+        "auto": "已自动处理",
+        "closed": "已完成",
+        "resolved": "已解决",
+        "escalated": "等待人工处理",
+        "in_progress": "人工处理中",
+        "waiting_customer": "等待您补充信息",
+    }
+
+    def customer_category(ticket: dict) -> str:
+        category = ticket.get("category") or ""
+        text = str(ticket.get("ticket_text") or "")
+        if "工单" in text or "售后进度" in text:
+            return "售后进度"
+        if category == "人工处理工单":
+            if any(k in text for k in ("退款", "退钱")):
+                return "退款问题"
+            if any(k in text for k in ("物流", "快递", "运单")):
+                return "物流查询"
+            if any(k in text for k in ("退货", "换货")):
+                return "退换货问题"
+            if any(k in text for k in ("维修", "售后", "质量", "损坏")):
+                return "售后服务"
+        return category_names.get(category, "客服咨询")
+
+    business_keywords = (
+        "退款", "退钱", "退货", "换货", "售后", "维修", "报修", "质量", "损坏", "破损",
+        "投诉", "赔偿", "纠纷", "人工",
     )
+    active_statuses = {"escalated", "in_progress", "waiting_customer"}
+    completed_statuses = {"resolved", "closed"}
+
+    def is_customer_ticket(ticket: dict) -> bool:
+        status = ticket.get("status") or ""
+        category = ticket.get("category") or ""
+        text = str(ticket.get("ticket_text") or "")
+        if status in active_statuses:
+            return True
+        if status not in completed_statuses:
+            return False
+        if category in {"退款纠纷", "退货申请", "售后维修"}:
+            return True
+        return category == "人工处理工单" and any(k in text for k in business_keywords)
+
+    visible = [ticket for ticket in tickets if is_customer_ticket(ticket)]
+    visible.sort(key=lambda ticket: ticket.get("status") not in active_statuses)
+    visible = visible[:5]
+    if not visible:
+        return "您目前没有正在处理的售后或人工工单。订单和物流记录可以通过对应入口单独查询。"
+
+    active_count = sum(ticket.get("status") in active_statuses for ticket in visible)
+    if active_count:
+        lines = [f"您有 {active_count} 个事项正在处理中："]
+    else:
+        lines = ["您目前没有正在处理的工单。最近已完成的事项："]
+    for index, ticket in enumerate(visible, 1):
+        category = customer_category(ticket)
+        status = status_names.get(ticket.get("status"), "处理中")
+        summary = " ".join(str(ticket.get("ticket_text") or "").split())
+        if len(summary) > 42:
+            summary = summary[:42] + "…"
+        created_at = ticket.get("created_at")
+        created = str(created_at)[:16] if created_at else ""
+        detail = f"{index}. {category}：{status}"
+        if summary:
+            detail += f"\n   {summary}"
+        if created:
+            detail += f"\n   提交时间：{created}"
+        lines.append(detail)
+    return "\n".join(lines)
 
 
 def _apply_after_sale(order_id: str, issue: str, username: str | None) -> str:
@@ -305,6 +386,64 @@ def _execute_tool(name: str, args: dict, username: str | None) -> str:
     if name == "get_weather":
         return _get_weather(args.get("city", ""))
     return "未知工具"
+
+
+def _execute_with_mcp_fallback(name: str, args: dict, username: str | None) -> str:
+    """业务查询的确定性执行器：MCP 优先，失败后回退同名内置工具。"""
+    try:
+        mcp_tools = mcp_client.list_tools(username, {name})
+        if any(tool.get("function", {}).get("name") == name for tool in mcp_tools):
+            try:
+                return mcp_client.call_tool(username, name, args)
+            except mcp_client.MCPClientError as exc:
+                logger.warning("确定性查询的 MCP 工具 %s 失败，回退内置工具：%s", name, exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("确定性查询发现 MCP 工具 %s 失败，回退内置工具：%s", name, exc)
+    return _execute_tool(name, args, username)
+
+
+def run_data_query(question: str, username: str | None = None) -> str:
+    """处理不需要 LLM 猜参数的个人数据查询。
+
+    用户只说“我的快递到哪了”时没有运单号，必须先查订单列表，
+    再从当前用户自己的订单数据中返回物流信息，而不是让模型猜 tracking_no。
+    """
+    if not username:
+        return "当前会话未登录，无法查询您的订单、物流或退款进度。"
+    text = (question or "").lower()
+    if "工单" in text or "售后进度" in text:
+        return _execute_with_mcp_fallback("check_my_tickets", {}, username)
+
+    raw = _execute_with_mcp_fallback("list_my_orders", {}, username)
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return raw
+    orders = payload.get("orders") or []
+    if not orders:
+        return "您目前没有可查询的订单记录。"
+
+    if "退款" in text or "退钱" in text:
+        rows = [
+            f"订单 {order.get('order_id')}（{order.get('product')}）：{order.get('refund_status') or '暂无退款记录'}"
+            for order in orders
+        ]
+        return "您的退款进度：" + "；".join(rows)
+
+    if "快递" in text or "物流" in text or "到哪" in text or "什么时候到" in text:
+        rows = []
+        for order in orders:
+            if order.get("tracking_no") or order.get("logistics"):
+                rows.append(
+                    f"订单 {order.get('order_id')}（{order.get('product')}）："
+                    f"{order.get('logistics') or '暂无物流更新'}"
+                )
+        return "您的物流进度：" + ("；".join(rows) if rows else "目前还没有可查询的物流单号。")
+
+    return "您的订单：" + "；".join(
+        f"{order.get('order_id')}（{order.get('product')}，{order.get('status')}）"
+        for order in orders
+    )
 
 
 def run_agent(question: str, username: str | None = None, *,

@@ -66,7 +66,8 @@ def run_case(case: dict) -> tuple[dict, list[str]]:
     rag_hit = None
     if mock_kind == "rag":
         rag_hit = {"question": "退货政策", "answer": "支持七天无理由退货。", "distance": 0.12}
-    agent_result = None if mock_kind in {"agent_error"} else "模拟 Agent 回复"
+    agent_result = None if mock_kind in {"agent_error", "data_query_error"} else "模拟 Agent 回复"
+    data_query_result = None if mock_kind in {"agent_error", "data_query_error"} else "模拟实时查询结果"
     classify_result = None if mock_kind == "classifier_error" else _classify_result(case)
     chat_result = "模拟闲聊回复"
 
@@ -79,7 +80,8 @@ def run_case(case: dict) -> tuple[dict, list[str]]:
             patch.object(router.rag, "best_answer", return_value=rag_hit), \
             patch.object(router.responder, "chat_reply", return_value=chat_result), \
             patch.object(router, "_classify_safe", return_value=classify_result), \
-            patch.object(router, "_run_agent_safe", return_value=agent_result):
+            patch.object(router, "_run_agent_safe", return_value=agent_result), \
+            patch.object(router, "_run_data_query_safe", return_value=data_query_result):
         result = router.process_ticket(case["text"], username="eval-user")
 
     trace = json.loads(result.get("route_trace") or "[]")

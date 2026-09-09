@@ -19,6 +19,9 @@ import os
 import re
 import threading
 import uuid
+import json
+import unicodedata
+from collections import OrderedDict
 from datetime import datetime
 
 import chromadb
@@ -26,7 +29,7 @@ import numpy as np
 from chromadb.api.types import Documents, Embeddings, EmbeddingFunction
 from chromadb.utils import embedding_functions
 
-from app import config, db, llm
+from app import config, db, llm, redis_store
 from app.vector_store import create_store
 
 logger = logging.getLogger("app.rag")
@@ -94,6 +97,185 @@ _embedding_lock = threading.Lock()
 _faq_collection = None
 _docs_collection = None
 _collection_lock = threading.Lock()
+
+_faq_cache = OrderedDict()
+_faq_cache_lock = threading.Lock()
+_faq_cache_stats = {"memory_hit": 0, "redis_hit": 0, "semantic_hit": 0, "miss": 0, "store": 0, "faq_direct": 0}
+_faq_semantic_cache = []
+
+
+def load_faq_variants(path=None) -> dict[str, list[str]]:
+    """读取可维护的 FAQ 多问法资产，文件不存在时使用空映射。"""
+    variant_path = path or config.Config.FAQ_VARIANTS_PATH
+    try:
+        data = json.loads(variant_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        return {}
+    return {
+        str(question): [str(item) for item in variants if str(item).strip()]
+        for question, variants in data.items()
+        if isinstance(variants, list)
+    }
+
+
+def normalize_question(text: str) -> str:
+    """把同一问题的常见口语、空白和标点差异归一成稳定缓存键。"""
+    value = unicodedata.normalize("NFKC", (text or "").strip()).lower()
+    value = re.sub(r"[，。！？；：、,.!?;:（）()【】\[\]{}<>《》\"'“”‘’`~·…]+", "", value)
+    value = re.sub(r"\s+", "", value)
+    replacements = {
+        "请问": "", "能不能": "能否", "可不可以": "能否", "怎么弄": "怎么办",
+        "咋办": "怎么办", "多少钱": "价格多少", "多长时间": "多久", "多长": "多久",
+        "我的快递到哪了": "物流查询", "我的快递在哪": "物流查询",
+        "我的快递在哪": "物流查询", "快递到哪了": "物流查询", "查快递": "物流查询",
+    }
+    for source, target in replacements.items():
+        value = value.replace(source, target)
+    return value
+
+
+def _is_live_data_question(text: str) -> bool:
+    """个人订单、物流、退款进度必须查实时数据，不能命中通用 FAQ。"""
+    value = normalize_question(text)
+    personal_markers = ("我的", "我买的", "订单号", "运单号", "包裹", "快递")
+    live_markers = ("订单", "物流", "快递", "包裹", "退款", "工单", "售后进度")
+    return any(marker in value for marker in personal_markers) and any(marker in value for marker in live_markers)
+
+
+def _cache_key(question: str) -> str:
+    normalized = normalize_question(question)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _cache_get(question: str) -> tuple[dict | None, str | None]:
+    key = _cache_key(question)
+    with _faq_cache_lock:
+        item = _faq_cache.get(key)
+        if item is not None:
+            _faq_cache.move_to_end(key)
+            _faq_cache_stats["memory_hit"] += 1
+            return {**item, "cache_hit": True, "cache_layer": "memory"}, key
+    raw = redis_store.get_cache(redis_store.cache_key("faq", key))
+    if raw:
+        try:
+            item = json.loads(raw)
+            with _faq_cache_lock:
+                _faq_cache[key] = item
+                _faq_cache.move_to_end(key)
+                _trim_faq_cache()
+                _faq_cache_stats["redis_hit"] += 1
+            return {**item, "cache_hit": True, "cache_layer": "redis"}, key
+        except (TypeError, ValueError, json.JSONDecodeError):
+            logger.warning("FAQ Redis 缓存内容无效，忽略该条：%s", key)
+    with _faq_cache_lock:
+        _faq_cache_stats["miss"] += 1
+    return None, key
+
+
+def _semantic_cache_get(question: str) -> tuple[dict | None, str | None]:
+    """在已确认的 FAQ 问法中做轻量向量比对，覆盖字面差异较大的问法。"""
+    if _is_live_data_question(question) or not _faq_semantic_cache:
+        return None, None
+    query_vector = np.asarray(_get_embedding_fn()([question])[0], dtype=np.float32)
+    query_norm = np.linalg.norm(query_vector)
+    if query_norm == 0:
+        return None, None
+    best_item = None
+    best_distance = None
+    with _faq_cache_lock:
+        for item in _faq_semantic_cache:
+            vector = np.asarray(item["vector"], dtype=np.float32)
+            distance = float(1 - np.dot(query_vector, vector) / max(query_norm * np.linalg.norm(vector), 1e-8))
+            if best_distance is None or distance < best_distance:
+                best_item, best_distance = item, distance
+    if best_item is None or best_distance > config.Config.FAQ_SEMANTIC_CACHE_DISTANCE:
+        return None, None
+    with _faq_cache_lock:
+        _faq_cache_stats["semantic_hit"] = _faq_cache_stats.get("semantic_hit", 0) + 1
+    return {**best_item["answer"], "distance": 0.0, "cache_hit": True, "cache_layer": "semantic", "semantic_distance": best_distance}, _cache_key(question)
+
+
+def _trim_faq_cache() -> None:
+    while len(_faq_cache) > max(1, config.Config.FAQ_CACHE_MAX_SIZE):
+        _faq_cache.popitem(last=False)
+
+
+def _cache_put(key: str, answer: dict) -> None:
+    _cache_put_internal(key, answer, count_direct=True)
+
+
+def _cache_put_internal(key: str, answer: dict, count_direct: bool = False) -> None:
+    payload = {k: v for k, v in answer.items() if k not in {"cache_hit", "cache_layer"}}
+    with _faq_cache_lock:
+        _faq_cache[key] = payload
+        _faq_cache.move_to_end(key)
+        _trim_faq_cache()
+        _faq_cache_stats["store"] += 1
+        if count_direct:
+            _faq_cache_stats["faq_direct"] += 1
+    try:
+        redis_store.set_cache(
+            redis_store.cache_key("faq", key),
+            json.dumps(payload, ensure_ascii=False),
+            config.Config.FAQ_CACHE_TTL_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("FAQ Redis 缓存写入失败：%s", exc)
+
+
+def _warm_semantic_cache(entries: list[dict]) -> None:
+    """为启用 FAQ 建立语义原型；只保存已确认的标准答案，不缓存未命中。"""
+    if not entries:
+        return
+    try:
+        variants = load_faq_variants()
+        prototype_items = []
+        for entry in entries:
+            canonical = entry.get("question")
+            if not canonical:
+                continue
+            prototype_items.extend(
+                {"question": question, "answer": entry}
+                for question in [canonical, *variants.get(canonical, [])]
+            )
+        vectors = _get_embedding_fn()([item["question"] for item in prototype_items])
+        with _faq_cache_lock:
+            for item in prototype_items:
+                payload = {**item["answer"], "distance": 0.0, "faq_variant": item["question"]}
+                _faq_cache[_cache_key(item["question"])] = payload
+                _faq_cache.move_to_end(_cache_key(item["question"]))
+            _trim_faq_cache()
+            _faq_semantic_cache.extend(
+                {"vector": vector, "answer": item["answer"], "question": item["question"]}
+                for item, vector in zip(prototype_items, vectors)
+            )
+            limit = max(1, config.Config.FAQ_CACHE_MAX_SIZE)
+            if len(_faq_semantic_cache) > limit:
+                del _faq_semantic_cache[:-limit]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("FAQ 语义缓存预热失败，继续使用普通检索：%s", exc)
+
+
+def clear_faq_cache() -> None:
+    with _faq_cache_lock:
+        _faq_cache.clear()
+        _faq_semantic_cache.clear()
+    try:
+        redis_store.delete_cache_prefix(redis_store.cache_key("faq", ""))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("FAQ Redis 缓存清理失败：%s", exc)
+
+
+def cache_stats() -> dict:
+    with _faq_cache_lock:
+        stats = dict(_faq_cache_stats)
+        stats["memory_size"] = len(_faq_cache)
+        stats["semantic_size"] = len(_faq_semantic_cache)
+    # semantic_hit 发生在 _cache_get miss 之后，因此 miss 已经代表了这次请求，不能重复计入。
+    total = stats["memory_hit"] + stats["redis_hit"] + stats["miss"]
+    stats["hit_rate"] = round((stats["memory_hit"] + stats["redis_hit"] + stats.get("semantic_hit", 0)) / total, 4) if total else None
+    stats["llm_saved"] = stats["faq_direct"] + stats["memory_hit"] + stats["redis_hit"] + stats.get("semantic_hit", 0)
+    return stats
 
 
 def _get_embedding_fn():
@@ -176,6 +358,7 @@ def sync_faq_to_chroma() -> int:
     不需要重启服务即可生效。软删除的条目会从向量库里移除。
     """
     entries = db.list_faq_entries(enabled_only=True)
+    clear_faq_cache()
     collection = get_collection()
 
     if entries:
@@ -184,6 +367,7 @@ def sync_faq_to_chroma() -> int:
             documents=[e["question"] for e in entries],
             metadatas=[{"answer": e["answer"], "faq_id": e["id"]} for e in entries],
         )
+        _warm_semantic_cache(entries)
 
     # 删除向量库里「已不在启用列表」的旧条目（含软删 / 被删除的）
     enabled_ids = {f"faq-{e['id']}" for e in entries}
@@ -257,6 +441,15 @@ def best_answer(question: str, top_k: int = None) -> dict | None:
       - 命中：直接返回知识库答案（不调用大模型，毫秒级）；
       - 未命中：返回 None，由调用方降级到 LLM / Agent。
     """
+    if _is_live_data_question(question):
+        return None
+    cached, key = _cache_get(question)
+    if cached is not None:
+        return cached
+    semantic_cached, semantic_key = _semantic_cache_get(question)
+    if semantic_cached is not None:
+        _cache_put_internal(semantic_key, semantic_cached)
+        return semantic_cached
     hits = rerank(question, retrieve(question, top_k=top_k), top_n=3)
     if not hits:
         return None
@@ -266,6 +459,15 @@ def best_answer(question: str, top_k: int = None) -> dict | None:
         return None
     if not (best.get("answer") or "").strip():
         return None
+    _cache_put(key, best)
+    try:
+        vector = _get_embedding_fn()([question])[0]
+        with _faq_cache_lock:
+            _faq_semantic_cache.append({"vector": vector, "answer": best})
+            if len(_faq_semantic_cache) > max(1, config.Config.FAQ_CACHE_MAX_SIZE):
+                del _faq_semantic_cache[:-config.Config.FAQ_CACHE_MAX_SIZE]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("FAQ 语义缓存写入失败：%s", exc)
     return best
 
 
@@ -394,7 +596,7 @@ def rerank_documents(query: str, chunks: list[dict], top_n: int = 3) -> list[dic
 # 文档切块 + 向量化（RAG 的另一种数据源：产品手册 / 政策文档）
 # ---------------------------------------------------------------------------
 
-def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
+def chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> list[str]:
     """把一篇长文档切成带重叠的文本块（chunk）。
 
     切块策略：
@@ -404,6 +606,10 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
 
     这是「文档切块 → 向量化 → 相似度检索」链路的第一步。
     """
+    chunk_size = chunk_size or config.Config.RAG_CHUNK_SIZE
+    overlap = overlap if overlap is not None else config.Config.RAG_CHUNK_OVERLAP
+    if overlap >= chunk_size:
+        raise ValueError("overlap 必须小于 chunk_size")
     text = (text or "").strip()
     if not text:
         return []
@@ -420,8 +626,21 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
                 chunks.append(current)
                 current = ""
             step = chunk_size - overlap
-            for i in range(0, len(para), step if step > 0 else chunk_size):
-                chunks.append(para[i:i + chunk_size])
+            # 长段落优先在句号、问号、分号后找边界，找不到再按窗口硬切。
+            start = 0
+            while start < len(para):
+                end = min(len(para), start + chunk_size)
+                if end < len(para):
+                    boundary = max(
+                        para.rfind(mark, start + chunk_size // 2, end)
+                        for mark in "。！？；.?!;"
+                    )
+                    if boundary > start:
+                        end = boundary + 1
+                chunks.append(para[start:end])
+                if end >= len(para):
+                    break
+                start = max(start + 1, end - overlap)
             continue
 
         # 当前块再塞这段会不会超？超了就收块，并保留上一段尾部做重叠衔接

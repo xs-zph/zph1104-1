@@ -45,6 +45,9 @@ class Config:
     # 企业部署基础设施；留空 Redis 时继续使用单机内存降级。
     REDIS_URL = os.getenv("REDIS_URL", "")
     REDIS_KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "ai_ticket:")
+    FAQ_CACHE_TTL_SECONDS = int(os.getenv("FAQ_CACHE_TTL_SECONDS", "3600"))
+    FAQ_CACHE_MAX_SIZE = int(os.getenv("FAQ_CACHE_MAX_SIZE", "512"))
+    FAQ_SEMANTIC_CACHE_DISTANCE = float(os.getenv("FAQ_SEMANTIC_CACHE_DISTANCE", "0.22"))
     DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
     DB_POOL_TIMEOUT_SECONDS = float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "5"))
     DEFAULT_SLA_MINUTES = int(os.getenv("DEFAULT_SLA_MINUTES", "30"))
@@ -55,6 +58,7 @@ class Config:
     # ---- 路径 ----
     DATA_DIR = BASE_DIR / "data"
     FAQ_PATH = DATA_DIR / "faq.md"
+    FAQ_VARIANTS_PATH = DATA_DIR / "faq_variants.json"
     DOCS_DIR = DATA_DIR / "docs"      # 产品手册 / 政策文档（文档切块向量化用）
     CHROMA_DIR = DATA_DIR / "chroma"
     LOG_DIR = BASE_DIR / "logs"
@@ -101,6 +105,8 @@ class Config:
 
     # RAG 向量召回的候选条数（召回 Top10 → 本地 reranker 重排 Top3）
     RAG_TOP_K = int(os.getenv("RAG_TOP_K", "10"))
+    RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "420"))
+    RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "60"))
     RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
     RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
     RERANKER_ALLOW_DOWNLOAD = os.getenv("RERANKER_ALLOW_DOWNLOAD", "false").lower() in {

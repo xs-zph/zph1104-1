@@ -186,6 +186,6 @@ class TicketOut(BaseModel):
     reason: Optional[str] = None
     status: str                      # auto（自动处理）/ escalated（人工升级）
     reply: Optional[str] = None
-    reply_source: Optional[str] = None   # template / rag / escalate
+    reply_source: Optional[str] = None   # template / rag / agent / chat / clarification / escalate / service_error
     latency_ms: Optional[int] = None
     created_at: Optional[str] = None

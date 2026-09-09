@@ -4,29 +4,47 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>经理仪表盘 - AI 工单系统</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260904-2" />
+  <link rel="stylesheet" href="/static/style.css?v=20260909-3" />
 </head>
 <body class="admin-body">
   <header class="navbar"><div class="navbar-inner">
     <div class="brand"><span class="brand-icon">M</span><span class="brand-name">经理运营仪表盘</span></div>
     <div class="navbar-right"><span class="navbar-user" id="manager-username">经理</span><button class="btn btn-light" id="logout-btn">退出登录</button></div>
   </div></header>
-  <main class="container manager-container">
-    <section class="manager-intro"><div><p class="eyebrow">运营总览</p><h1>人工服务效果</h1><p>查看 AI 分流、人工处理、SLA 和客服负载。</p></div><button class="btn btn-ghost" id="refresh-dashboard-btn">刷新数据</button></section>
-    <section class="manager-metrics" aria-label="核心指标">
-      <div class="metric-card"><div class="metric-label">工单总数</div><div class="metric-value" id="m-total">-</div></div>
-      <div class="metric-card"><div class="metric-label">AI 自动处理率</div><div class="metric-value" id="m-auto-rate">-</div></div>
-      <div class="metric-card"><div class="metric-label">转人工总量</div><div class="metric-value" id="m-human-total">-</div></div>
-      <div class="metric-card"><div class="metric-label">人工解决率</div><div class="metric-value" id="m-human-rate">-</div></div>
-      <div class="metric-card"><div class="metric-label">SLA 超时</div><div class="metric-value" id="m-sla">-</div></div>
-      <div class="metric-card"><div class="metric-label">平均处理耗时</div><div class="metric-value" id="m-latency">-</div></div>
+  <main class="container manager-container manager-dashboard-shell">
+    <section class="dashboard-hero">
+      <div class="dashboard-hero-copy"><p class="eyebrow">OPERATIONS / LIVE VIEW</p><h1>客服运营驾驶舱</h1><p>从总量、分流到人工效率，快速看见今天的服务压力。</p></div>
+      <div class="dashboard-command-bar">
+        <label class="dashboard-search"><span aria-hidden="true">⌕</span><input id="dashboard-filter" type="search" placeholder="筛选坐席或分类" autocomplete="off" /></label>
+        <button class="btn btn-ghost dashboard-refresh" id="refresh-dashboard-btn" type="button"><span aria-hidden="true">↻</span>刷新数据</button>
+      </div>
     </section>
-    <section class="manager-grid">
-      <div class="panel manager-panel"><div class="panel-head"><h2 class="panel-title">每日处理趋势</h2><span class="panel-tip">近 7 天</span></div><div id="daily-workload" class="bar-chart" aria-label="每日处理趋势"></div><div class="chart-legend"><span><i class="chart-dot total"></i>全部</span><span><i class="chart-dot handoff"></i>转人工</span><span><i class="chart-dot resolved"></i>已解决</span></div></div>
-      <div class="panel manager-panel"><div class="panel-head"><h2 class="panel-title">客服处理效果</h2><span class="panel-tip">按坐席</span></div><div id="agent-performance" class="agent-performance"></div></div>
+    <section class="manager-metrics dashboard-metrics" aria-label="核心指标">
+      <div class="metric-card metric-card-primary"><span class="metric-kicker">TOTAL TICKETS</span><div class="metric-label">工单总数</div><div class="metric-value" id="m-total">-</div><span class="metric-foot">全渠道累计</span></div>
+      <div class="metric-card metric-card-cyan"><span class="metric-kicker">AI ROUTING</span><div class="metric-label">AI 自动处理率</div><div class="metric-value" id="m-auto-rate">-</div><span class="metric-foot">自动分流效率</span></div>
+      <div class="metric-card metric-card-amber"><span class="metric-kicker">HUMAN QUEUE</span><div class="metric-label">转人工总量</div><div class="metric-value" id="m-human-total">-</div><span class="metric-foot">需要人工跟进</span></div>
+      <div class="metric-card metric-card-blue"><span class="metric-kicker">RESOLUTION</span><div class="metric-label">人工解决率</div><div class="metric-value" id="m-human-rate">-</div><span class="metric-foot">人工闭环能力</span></div>
+      <div class="metric-card metric-card-red"><span class="metric-kicker">SLA WATCH</span><div class="metric-label">SLA 超时</div><div class="metric-value" id="m-sla">-</div><span class="metric-foot">需要优先处理</span></div>
+      <div class="metric-card metric-card-dark"><span class="metric-kicker">LATENCY</span><div class="metric-label">平均处理耗时</div><div class="metric-value" id="m-latency">-</div><span class="metric-foot">系统响应速度</span></div>
     </section>
-    <section class="panel manager-panel"><div class="panel-head"><div><h2 class="panel-title">运营统计</h2><p class="panel-desc">用于观察高频问题、客户情绪和反馈标签。</p></div></div><div class="manager-stats" id="manager-stats"><div class="empty">加载中...</div></div></section>
+    <section class="dashboard-visual-grid">
+      <article class="dashboard-card mix-card">
+        <div class="panel-head"><div><span class="section-index">01 / ROUTING MIX</span><h2 class="panel-title">处理分布</h2></div><span class="panel-tip">自动 vs 人工</span></div>
+        <div class="mix-visual"><div class="donut-stage"><div class="donut-shadow"></div><svg id="routing-donut" class="routing-donut" viewBox="0 0 220 220" role="img" aria-label="自动处理与人工处理占比"></svg><div class="donut-core"><strong id="donut-rate">-</strong><span>AI 自动</span></div><i class="donut-orbit orbit-one"></i><i class="donut-orbit orbit-two"></i></div><div class="mix-legend" id="mix-legend"></div></div>
+      </article>
+      <article class="dashboard-card trend-card">
+        <div class="panel-head"><div><span class="section-index">02 / SERVICE PULSE</span><h2 class="panel-title">服务趋势</h2></div><span class="panel-tip">近 7 天</span></div>
+        <div id="daily-trend" class="line-chart-wrap" aria-label="近七日服务趋势"></div>
+        <div class="chart-legend"><span><i class="chart-dot total"></i>全部</span><span><i class="chart-dot handoff"></i>转人工</span><span><i class="chart-dot resolved"></i>已解决</span></div>
+      </article>
+    </section>
+    <section class="dashboard-lower-grid">
+      <article class="dashboard-card category-card"><div class="panel-head"><div><span class="section-index">03 / CATEGORY SPLIT</span><h2 class="panel-title">问题类型拆分</h2></div><span class="panel-tip">按工单数量</span></div><div id="category-distribution" class="category-distribution"></div></article>
+      <article class="dashboard-card agent-card"><div class="panel-head"><div><span class="section-index">04 / AGENT LOAD</span><h2 class="panel-title">客服处理效果</h2></div><span class="panel-tip">按坐席</span></div><div id="agent-performance" class="agent-performance"></div></article>
+    </section>
+    <section class="dashboard-card rag-quality-card"><div class="panel-head"><div><span class="section-index">05 / RETRIEVAL QUALITY</span><h2 class="panel-title">知识库检索质量</h2><p class="panel-desc">离线评测集与线上 FAQ 缓存效果。</p></div><span class="panel-tip" id="rag-eval-count">评测集加载中</span></div><div class="rag-quality-grid"><div class="rag-quality-metrics"><div class="rag-quality-metric"><span>Recall@5</span><strong id="rag-recall">-</strong><small>候选召回能力</small></div><div class="rag-quality-metric"><span>Precision@3</span><strong id="rag-precision">-</strong><small>精排结果准确度</small></div><div class="rag-quality-metric"><span>FAQ 命中率</span><strong id="rag-hit-rate">-</strong><small>问题直接命中知识库</small></div><div class="rag-quality-metric"><span>边界保护率</span><strong id="rag-guard-rate">-</strong><small>实时问题不误命中 FAQ</small></div><div class="rag-quality-metric"><span>LLM 节省次数</span><strong id="rag-llm-saved">-</strong><small>FAQ 直接回答</small></div></div><div class="cache-orbit-stage"><div class="cache-orbit"><div class="cache-orbit-core"><strong id="rag-cache-rate">-</strong><span>缓存命中</span></div></div><div class="cache-orbit-label"><i></i><span>本地 <b id="rag-memory-hit">0</b></span><i></i><span>Redis <b id="rag-redis-hit">0</b></span></div></div></div></section>
+    <section class="dashboard-card manager-panel dashboard-stats-card"><div class="panel-head"><div><span class="section-index">06 / SIGNALS</span><h2 class="panel-title">运营信号</h2><p class="panel-desc">高频问题与客户反馈标签。</p></div></div><div class="manager-stats" id="manager-stats"><div class="empty">加载中...</div></div></section>
   </main>
-  <script src="/static/manager.js?v=20260904-1"></script>
+  <script src="/static/manager.js?v=20260909-3"></script>
 </body>
 </html>

@@ -43,6 +43,8 @@ window.addEventListener("DOMContentLoaded", async () => {
     username = me.username || "用户";
 
     document.getElementById("current-username").textContent = me.username;
+    const sidebarAvatar = document.getElementById("sidebar-avatar");
+    if (sidebarAvatar) sidebarAvatar.textContent = me.username.charAt(0).toUpperCase();
     startHumanResponseRealtime();
     loadActiveHumanHandoff();
     appendMessage("ai", "您好，我是 AI 客服小助手 👋\n请问有什么可以帮您的？", null);
@@ -95,9 +97,10 @@ chatForm.addEventListener("submit", async (e) => {
 
     const escalated = data.reply_source === "escalate";
     const queuedForHuman = data.reply_source === "human_queue";
+    const serviceError = data.reply_source === "service_error";
     const responseType = queuedForHuman
       ? "human-pending"
-      : (escalated ? "escalate" : null);
+      : (escalated ? "escalate" : (serviceError ? "service-error" : null));
     appendMessage(
       "ai",
       data.reply || "（无回复）",
@@ -341,8 +344,14 @@ function appendMessage(role, text, type, data) {
   const bubble = document.createElement("div");
   bubble.className = "msg-bubble";
 
-  // 转人工时显示醒目徽章
-  if (type === "escalate" || type === "human-pending" || type === "human-resolved") {
+  // 服务异常与人工接管分开显示，避免把可重试问题误认为已转人工。
+  if (type === "service-error") {
+    const badge = document.createElement("span");
+    badge.className = "msg-badge";
+    badge.textContent = "实时查询异常 · 可重试";
+    bubble.appendChild(badge);
+    bubble.appendChild(document.createElement("br"));
+  } else if (type === "escalate" || type === "human-pending" || type === "human-resolved") {
     const badge = document.createElement("span");
     badge.className = "msg-badge";
     badge.textContent = type === "human-resolved"
@@ -377,14 +386,22 @@ function appendMessage(role, text, type, data) {
     wrap.appendChild(ocr);
   }
 
-  // 自动回复时附带分类 / 置信度小字（方便演示时讲解）；闲聊回复不展示
-  if (data && data.category && data.reply_source !== "chat") {
-    const meta = document.createElement("div");
-    meta.className = "msg-meta";
-    meta.textContent =
-      "分类：" + data.category +
-      " · 置信度 " + Math.round((data.confidence || 0) * 100) + "%";
-    wrap.appendChild(meta);
+  if (data?.quick_replies?.length) {
+    const options = document.createElement("div");
+    options.className = "quick-replies";
+    data.quick_replies.forEach((option) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "quick-reply-btn";
+      button.textContent = option.label || option.value || option;
+      button.addEventListener("click", () => {
+        chatInput.value = option.value || option.label || option;
+        chatForm.dispatchEvent(new Event("submit"));
+        options.querySelectorAll("button").forEach((item) => { item.disabled = true; });
+      });
+      options.appendChild(button);
+    });
+    wrap.appendChild(options);
   }
 
   // 自动业务回复（Agent / 模板）附带 👍👎 满意度按钮，形成评价闭环
