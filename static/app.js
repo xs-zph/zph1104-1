@@ -368,6 +368,14 @@ function appendMessage(role, text, type, data) {
       : "图片识别暂不可用，已按文字内容继续处理。";
     wrap.appendChild(analysis);
   }
+  if (data?.ocr_status && data.ocr_status !== "empty") {
+    const ocr = document.createElement("div");
+    ocr.className = "msg-image-analysis";
+    ocr.textContent = data.ocr_text
+      ? "图片文字：" + data.ocr_text
+      : "图片文字识别暂不可用。";
+    wrap.appendChild(ocr);
+  }
 
   // 自动回复时附带分类 / 置信度小字（方便演示时讲解）；闲聊回复不展示
   if (data && data.category && data.reply_source !== "chat") {

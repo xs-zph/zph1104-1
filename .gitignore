@@ -12,3 +12,16 @@ venv/
 data/tickets.db
 data/chroma/
 logs/
+
+# 测试与静态检查缓存
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# 本地规划与临时工作目录
+.planning/
+_resume_*/
+_resume_tmp_*
+build_resume.py

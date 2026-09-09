@@ -61,6 +61,28 @@ class VisionModelTests(unittest.TestCase):
 
 
 class UploadShapeTests(unittest.TestCase):
+    def test_ocr_text_is_added_to_ticket_input(self):
+        from PIL import Image
+
+        image_data = io.BytesIO()
+        Image.new("RGB", (1, 1), "white").save(image_data, format="JPEG")
+        upload = UploadFile(
+            file=io.BytesIO(image_data.getvalue()), filename="test.jpg",
+            headers=Headers({"content-type": "image/jpeg"}),
+        )
+        record = {"status": "auto", "reply_source": "agent", "reply": "已识别"}
+        with patch.object(main, "_continue_human_handoff", return_value=None), \
+             patch.object(main.ocr, "recognize", return_value="订单号 A100"), \
+             patch.object(main.vision, "analyze", side_effect=RuntimeError("offline")), \
+             patch.object(main.router, "process_ticket", return_value=record) as process, \
+             patch.object(main.router, "save_processed", return_value=9), \
+             patch.object(main.db, "insert_ticket_message"), \
+             patch.object(main.db, "insert_ticket_log"):
+            result = asyncio.run(main.create_multimodal_ticket(text="请查单", image=upload, username="user"))
+
+        self.assertIn("订单号 A100", process.call_args.args[0])
+        self.assertEqual(result["ocr_status"], "recognized")
+
     def test_upload_file_can_be_constructed_for_endpoint_tests(self):
         upload = UploadFile(file=io.BytesIO(b"data"), filename="test.jpg")
         self.assertEqual(upload.filename, "test.jpg")

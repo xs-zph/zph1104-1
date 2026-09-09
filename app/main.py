@@ -30,7 +30,7 @@ from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException,
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import auth, config, db, document_ingest, events, feedback, memory, metrics, privacy, profile, rag, redis_store, router, sla, vision, wechat
+from app import auth, config, db, document_ingest, events, feedback, memory, metrics, ocr, privacy, profile, rag, redis_store, router, sla, vision, wechat
 from app.config import setup_logging
 from app.schemas import FAQCreate, FAQUpdate, FeedbackRequest, FeedbackTagRequest, LoginOut, LoginRequest, ManagedPasswordReset, ManagedUserCreate, ManagedUserUpdate, OrderCreate, OrderUpdate, PasswordResetChallengeRequest, PasswordResetRequest, PhoneCodeSendRequest, PhoneCodeVerifyRequest, ProfileFactUpdate, RegisterRequest, ResolveRequest, TicketAssignRequest, TicketCreate, TicketStatusRequest
 
@@ -652,7 +652,7 @@ def _save_ticket_record(record: dict, username: str) -> dict:
         )
     persisted = {
         key: value for key, value in record.items()
-        if key not in {"image_analysis", "image_analysis_status"}
+        if key not in {"image_analysis", "image_analysis_status", "ocr_text", "ocr_status"}
     }
     ticket_id = router.save_processed(persisted)
     record["id"] = ticket_id
@@ -675,7 +675,9 @@ def _save_ticket_record(record: dict, username: str) -> dict:
 
 def _continue_human_handoff(ticket_text: str, username: str,
                             image_analysis: str | None = None,
-                            image_analysis_status: str | None = None) -> dict | None:
+                            image_analysis_status: str | None = None,
+                            ocr_text: str | None = None,
+                            ocr_status: str | None = None) -> dict | None:
     """人工接管期间追加客户消息，禁止再次进入 AI 路由。"""
     safe_text = privacy.mask_sensitive(ticket_text)
     if not safe_text:
@@ -729,6 +731,9 @@ def _continue_human_handoff(ticket_text: str, username: str,
     if image_analysis_status:
         record["image_analysis"] = image_analysis
         record["image_analysis_status"] = image_analysis_status
+    if ocr_status:
+        record["ocr_text"] = ocr_text
+        record["ocr_status"] = ocr_status
     return record
 
 
@@ -758,6 +763,14 @@ async def create_multimodal_ticket(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    ocr_text = None
+    ocr_status = "unavailable"
+    try:
+        ocr_text = ocr.recognize(image_data, media_type)
+        ocr_status = "recognized" if ocr_text else "empty"
+    except Exception as exc:  # noqa: BLE001
+        logger.info("图片 OCR 不可用，继续视觉识别：%s", exc)
+
     analysis = None
     analysis_status = "unavailable"
     try:
@@ -767,13 +780,15 @@ async def create_multimodal_ticket(
         # 视觉模型失败时保留文字工单；纯图片则明确升级人工查看。
         logger.warning("图片识别失败，降级处理：%s", exc)
 
+    parts = []
+    if user_text:
+        parts.append(f"用户文字：{user_text}")
+    if ocr_text:
+        parts.append(f"[图片 OCR 文字]\n{ocr_text}")
     if analysis:
-        ticket_text = "\n\n".join(
-            part for part in (
-                f"用户文字：{user_text}" if user_text else "",
-                f"[图片识别结果]\n{analysis}",
-            ) if part
-        )
+        parts.append(f"[图片识别结果]\n{analysis}")
+    if parts and (ocr_text or analysis):
+        ticket_text = "\n\n".join(parts)
     elif user_text:
         ticket_text = user_text
     else:
@@ -784,6 +799,8 @@ async def create_multimodal_ticket(
         username,
         image_analysis=analysis,
         image_analysis_status=analysis_status,
+        ocr_text=ocr_text,
+        ocr_status=ocr_status,
     )
     if handoff is not None:
         return handoff
@@ -791,6 +808,8 @@ async def create_multimodal_ticket(
     record = router.process_ticket(ticket_text, username=username, device="web-image")
     record["image_analysis"] = analysis
     record["image_analysis_status"] = analysis_status
+    record["ocr_text"] = ocr_text
+    record["ocr_status"] = ocr_status
     return _save_ticket_record(record, username)
 
 

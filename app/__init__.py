@@ -8,7 +8,7 @@
   - classifier.py  工单自动分类
   - router.py      三级路由（RAG 优先 → 大模型 → 转人工）
   - agent.py       工具调用 Agent（订单/物流/退款/时间/天气）
-  - rag.py         知识库语义检索（ChromaDB，含 RAG 优先 best_answer）
+  - rag.py         知识库语义检索（Qdrant / Chroma 降级 + CrossEncoder 精排）
   - responder.py   闲聊回复
   - privacy.py     敏感信息脱敏
   - memory.py      多轮对话记忆

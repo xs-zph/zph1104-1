@@ -36,6 +36,11 @@ class Config:
     MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(8 * 1024 * 1024)))
     MAX_DOCUMENT_BYTES = int(os.getenv("MAX_DOCUMENT_BYTES", str(10 * 1024 * 1024)))
     MAX_DOCUMENT_CHARS = int(os.getenv("MAX_DOCUMENT_CHARS", "200000"))
+    # 向量库：Qdrant 为主，Chroma 仅作本地迁移源和故障降级。
+    QDRANT_ENABLED = os.getenv("QDRANT_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+    QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+    QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
+    QDRANT_TIMEOUT_SECONDS = float(os.getenv("QDRANT_TIMEOUT_SECONDS", "2"))
 
     # 企业部署基础设施；留空 Redis 时继续使用单机内存降级。
     REDIS_URL = os.getenv("REDIS_URL", "")
@@ -94,8 +99,15 @@ class Config:
     # 公众号后台「服务器配置」里的 Token，需与此处一致（用于签名校验）
     WECHAT_TOKEN = os.getenv("WECHAT_TOKEN", "ai_ticket_wechat_token")
 
-    # RAG 向量召回的候选条数（召回 Top5 → LLM 重排 Top3）
-    RAG_TOP_K = 5
+    # RAG 向量召回的候选条数（召回 Top10 → 本地 reranker 重排 Top3）
+    RAG_TOP_K = int(os.getenv("RAG_TOP_K", "10"))
+    RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+    RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
+    RERANKER_ALLOW_DOWNLOAD = os.getenv("RERANKER_ALLOW_DOWNLOAD", "false").lower() in {
+        "1", "true", "yes", "on"
+    }
+    OCR_ENABLED = os.getenv("OCR_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+    OCR_LANG = os.getenv("OCR_LANG", "ch")
 
     # 用户实体画像后台提取线程数（当前服务实例内有界执行）
     PROFILE_MAX_WORKERS = int(os.getenv("PROFILE_MAX_WORKERS", "2"))

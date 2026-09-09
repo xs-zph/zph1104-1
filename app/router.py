@@ -24,10 +24,25 @@ ticket_logger = logging.getLogger("tickets")
 _SMALLTALK_KEYWORDS = (
     "你好", "您好", "在吗", "在不在", "hi", "hello", "hey", "嗨", "哈喽",
     "早上好", "中午好", "下午好", "晚上好", "早安", "晚安",
-    "你是谁", "你叫什么", "介绍一下", "你是机器人", "你是真人", "你是ai", "你是AI", "你是智能",
+    "你是谁", "你叫什么", "你是哪个", "你是哪个机器人", "介绍一下", "介绍你自己",
+    "你是机器人", "你是真人", "你是ai", "你是AI", "你是智能",
     "你能做什么", "你能干什么", "你能帮我什么", "有什么功能", "你会什么", "你可以做什么",
     "谢谢", "感谢", "辛苦了", "再见", "拜拜",
 )
+
+
+# 助手元对话意图：不是业务工单，而是身份/能力/介绍类问题。
+_ASSISTANT_META_KEYWORDS = (
+    "你是谁", "你叫什么", "你是哪个", "你是哪个机器人", "你是谁呀", "你叫什么名字",
+    "你能做什么", "你能干什么", "你能帮我什么", "有什么功能", "你会什么", "你可以做什么",
+    "介绍一下", "介绍你自己", "自我介绍", "说说你自己",
+)
+
+
+def _is_assistant_meta_intent(text: str) -> bool:
+    """判断是否为助手身份/能力/介绍类元对话。"""
+    t = (text or "").strip().lower()
+    return any(k in t for k in _ASSISTANT_META_KEYWORDS)
 
 
 def is_smalltalk(text: str) -> bool:
@@ -38,6 +53,8 @@ def is_smalltalk(text: str) -> bool:
     """
     t = text.strip().lower()
     if not t:
+        return True
+    if _is_assistant_meta_intent(t):
         return True
     if not any(k in t for k in _SMALLTALK_KEYWORDS):
         return False
@@ -81,6 +98,13 @@ _DATA_QUERY_KEYWORDS = (
     "退款进度", "退款到账", "退款状态", "退款到哪", "钱什么时候到",
 )
 
+# 明显的跨场景组合诉求。个人数据查询只有在没有混入其它业务场景时，
+# 才能安全地跳过分类器；否则应交给分类器识别多意图并升级人工统一跟进。
+_OTHER_BUSINESS_INTENT_KEYWORDS = (
+    "退货", "换货", "开票", "发票", "维修", "报修", "保修",
+    "参数", "规格", "赔偿", "退款",
+)
+
 # 含投诉/纠纷/找人工等负面诉求时，不按自助查询处理，仍走分类器正常判定转人工
 _COMPLAINT_KEYWORDS = ("投诉", "赔偿", "纠纷", "扯皮", "找人工", "转人工", "人工客服", "人工处理")
 
@@ -89,6 +113,8 @@ def _is_data_query(text: str) -> bool:
     """判断是否为「查询我自己的订单/工单/物流/退款」这类自助查询意图。"""
     t = text or ""
     if any(k in t for k in _COMPLAINT_KEYWORDS):
+        return False
+    if any(k in t for k in _OTHER_BUSINESS_INTENT_KEYWORDS):
         return False
     return any(k in t for k in _DATA_QUERY_KEYWORDS)
 
@@ -197,6 +223,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
         record["phone"] = phone
         record["device"] = device
         record["latency_ms"] = int((time.perf_counter() - started) * 1000)
+        record["route_trace"] = json.dumps(trace, ensure_ascii=False)
         ticket_logger.info("缓存命中（%s）：%s", cache_key, safe_text)
         _remember_and_schedule(username, safe_text, record["reply"])
         return record

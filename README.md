@@ -4,7 +4,7 @@
 
 系统能把重复性咨询交给 AI 自动处理，把退款纠纷、复杂投诉等需要人工介入的问题自动升级给客服工作台跟进，从而提升客服效率。
 
-> 技术栈：Python + FastAPI + DeepSeek API + MySQL + ChromaDB（RAG 检索增强）+ MCP
+> 技术栈：Python + FastAPI + DeepSeek API + MySQL + Qdrant（Chroma 降级）+ CrossEncoder Reranker + 本地 OCR + MCP
 
 ## 页面预览
 
@@ -95,7 +95,9 @@ ai_ticket_system/
 │   ├── classifier.py       # 工单自动分类
 │   ├── router.py           # 条件路由（核心业务流程）
 │   ├── responder.py        # 闲聊回复（问候 / 寒暄 / 自我介绍）
-│   ├── rag.py              # ChromaDB 知识库检索（bge 语义向量 + 哈希兜底）
+│   ├── rag.py              # Qdrant/Chroma 检索（bge 向量 + CrossEncoder 精排）
+│   ├── vector_store.py     # Qdrant 主库与 Chroma 降级适配层
+│   ├── ocr.py              # RapidOCR 本地图片文字识别
 │   ├── db.py               # MySQL 数据存储（工单 + 用户）
 │   ├── mcp_client.py       # MCP 工具发现、schema 转换、调用和降级
 │   ├── multi_agent.py       # 中心式多 Agent、JSON 协议和共享黑板
@@ -164,6 +166,31 @@ docker compose down
 
 ### 本地 Python 部署
 
+### 离线路由评测
+
+项目内置一套不依赖真实大模型、MySQL 和向量模型的路由测试集，用来回归检查闲聊、RAG、个人数据查询、分类路由、转人工和故障降级：
+
+```bash
+python scripts/evaluate_router.py
+```
+
+测试样例位于 `data/eval_router_cases.jsonl`。需要查看每条样例的完整结果和 `route_trace` 时运行：
+
+```bash
+python scripts/evaluate_router.py --json
+```
+
+发布前可以运行完整的本地检查：
+
+```bash
+python -m compileall -q app scripts tests
+python scripts/evaluate_router.py
+python scripts/check_release.py
+python -m pytest -q
+```
+
+仓库已配置 GitHub Actions。推送到 `main` 或创建 Pull Request 时，CI 会自动执行 Python 编译检查、离线路由评测和全量测试；这些步骤不需要真实 LLM、MySQL 或 Qdrant。
+
 ### 1. 安装依赖
 
 ```bash
@@ -223,6 +250,14 @@ python scripts/seed_faq.py
 ```
 
 > 使用中文语义向量模型 **BAAI/bge-small-zh-v1.5**（首次运行自动下载，走 hf-mirror 镜像，国内友好）；模型不可用时自动回退本地哈希向量化兜底，保证服务不中断。
+
+默认流程为「向量召回 Top10 → 本地 **bge-reranker-base** 精排 Top3」；精排模型未缓存或不可用时自动按向量距离排序。已有 Chroma 数据可在 Qdrant 启动后迁移：
+
+```bash
+python scripts/migrate_chroma_to_qdrant.py
+```
+
+图片上传会先经过安全校验，再用 RapidOCR 提取图片文字并与视觉模型结果一起进入工单分类和 RAG；OCR 或视觉模型不可用时仍保留原有人工降级。
 
 ### 4. 启动系统
 

@@ -1,6 +1,6 @@
 """知识库初始化脚本：python scripts/seed_faq.py
 
-把 data/faq.md 里的问答写入 ChromaDB 向量数据库（RAG 检索的前提）。
+把 data/faq.md 里的问答写入 Qdrant（不可用时自动写入 Chroma 降级库）。
 首次运行会自动下载向量化模型 all-MiniLM-L6-v2，需要联网。
 """
 import sys

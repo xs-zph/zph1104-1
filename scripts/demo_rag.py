@@ -1,6 +1,6 @@
 """RAG 全链路演示脚本：python scripts/demo_rag.py
 
-完整展示「文档切块 → 向量化 → 存 ChromaDB → 相似度检索」这条链路，
+完整展示「文档切块 → 向量化 → Qdrant（Chroma 降级）→ 相似度检索」这条链路，
 用中文语义模型把「字面不同但语义相同」的问题映射到相近向量。
 
 运行时会在控制台打印：
@@ -43,7 +43,7 @@ def demo_retrieve():
         "手机坏了你们管修吗",
         "退款啥时候能到我卡里",
     ]
-    print(f"\n[向量化] 正在把 {Config.DOCS_DIR} 下的文档切块并写入 ChromaDB ...")
+    print(f"\n[向量化] 正在把 {Config.DOCS_DIR} 下的文档切块并写入 Qdrant ...")
     total = rag.ingest_documents(reset=True)
     print(f"[向量化] 完成，共写入 {total} 个文本块到集合 docs")
 

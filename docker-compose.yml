@@ -22,6 +22,13 @@ services:
       VISION_MODEL: ${VISION_MODEL:-}
       VISION_BASE_URL: ${VISION_BASE_URL:-}
       VISION_API_KEY: ${VISION_API_KEY:-}
+      QDRANT_ENABLED: ${QDRANT_ENABLED:-true}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      RERANKER_ENABLED: ${RERANKER_ENABLED:-true}
+      RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-base}
+      RERANKER_ALLOW_DOWNLOAD: ${RERANKER_ALLOW_DOWNLOAD:-false}
+      OCR_ENABLED: ${OCR_ENABLED:-true}
       DEMO_DATA_ENABLED: ${DEMO_DATA_ENABLED:-true}
       MCP_ENABLED: ${MCP_ENABLED:-true}
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
@@ -29,6 +36,8 @@ services:
       mysql:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     volumes:
       - chroma_data:/app/data/chroma
@@ -63,8 +72,22 @@ services:
     volumes:
       - redis_data:/data
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:6333/readyz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - qdrant_data:/qdrant/storage
+
 volumes:
   mysql_data:
   redis_data:
   chroma_data:
+  qdrant_data:
   logs_data:

@@ -1,4 +1,4 @@
-"""RAG 知识库模块：用 ChromaDB 存储 FAQ 文档并做语义检索。
+"""RAG 知识库模块：用 Qdrant（Chroma 降级）存储 FAQ 文档并做语义检索。
 
 流程：
   1. ingest()   把 data/faq.md 里的问答对切成一条条，向量化后存入 ChromaDB；
@@ -27,6 +27,7 @@ from chromadb.api.types import Documents, Embeddings, EmbeddingFunction
 from chromadb.utils import embedding_functions
 
 from app import config, db, llm
+from app.vector_store import create_store
 
 logger = logging.getLogger("app.rag")
 
@@ -90,6 +91,9 @@ class SentenceEmbeddingFunction(EmbeddingFunction):
 
 _embedding_fn = None
 _embedding_lock = threading.Lock()
+_faq_collection = None
+_docs_collection = None
+_collection_lock = threading.Lock()
 
 
 def _get_embedding_fn():
@@ -129,12 +133,17 @@ def _create_embedding_fn():
 
 
 def get_collection():
-    """获取（或创建）名为 faq 的向量集合。"""
+    """获取 FAQ 向量集合；Qdrant 不可用时回退到 Chroma。"""
+    global _faq_collection
+    if _faq_collection is not None:
+        return _faq_collection
     config.Config.ensure_dirs()
-    client = chromadb.PersistentClient(path=str(config.Config.CHROMA_DIR))
-    return client.get_or_create_collection(
-        name="faq", embedding_function=_get_embedding_fn()
-    )
+    with _collection_lock:
+        if _faq_collection is None:
+            _faq_collection = create_store(
+                "faq", _get_embedding_fn(), config.Config, config.Config.CHROMA_DIR
+            )
+    return _faq_collection
 
 
 def parse_faq(faq_path) -> list[dict]:
@@ -248,7 +257,7 @@ def best_answer(question: str, top_k: int = None) -> dict | None:
       - 命中：直接返回知识库答案（不调用大模型，毫秒级）；
       - 未命中：返回 None，由调用方降级到 LLM / Agent。
     """
-    hits = retrieve(question, top_k=top_k)
+    hits = rerank(question, retrieve(question, top_k=top_k), top_n=3)
     if not hits:
         return None
     best = hits[0]
@@ -326,50 +335,59 @@ def enable_entry(faq_id: int, operator: str = "system") -> dict:
 # 向量召回 Top5 + LLM 重排 Top3
 # ---------------------------------------------------------------------------
 
-_RERANK_SYSTEM = """你是知识库检索排序专家。给定用户问题和若干候选问答，按与用户问题的相关性从高到低排序，输出最相关的 {top_n} 条候选的编号。
+_reranker = None
+_reranker_lock = threading.Lock()
 
-【硬性约束】
-1. 只能从下面列出的候选中选择，禁止编造不存在的编号或内容。
-2. 编号是候选前面的数字（从 1 开始）。
-3. 严格输出 JSON：{{"ranked": [编号, ...]}}，编号按相关性从高到低排列；若没有相关的，输出空数组 []。
-"""
+
+def _get_reranker():
+    """懒加载本地 CrossEncoder；模型不可用时由调用方按向量距离降级。"""
+    global _reranker
+    if _reranker is None:
+        with _reranker_lock:
+            if _reranker is None:
+                from sentence_transformers import CrossEncoder
+
+                model_name = config.Config.RERANKER_MODEL
+                try:
+                    _reranker = CrossEncoder(
+                        model_name,
+                        automodel_args={"local_files_only": True},
+                    )
+                except Exception:
+                    if not config.Config.RERANKER_ALLOW_DOWNLOAD:
+                        raise
+                    _reranker = CrossEncoder(model_name)
+                logger.info("已启用本地 reranker：%s", model_name)
+    return _reranker
+
+
+def _chunk_pair(query: str, chunk: dict) -> list[str]:
+    question = chunk.get("question") or chunk.get("text") or ""
+    answer = chunk.get("answer") or ""
+    return [query, f"{question}\n{answer}".strip()]
 
 
 def rerank(query: str, chunks: list[dict], top_n: int = 3) -> list[dict]:
-    """用 LLM 对向量召回的结果重排，返回最相关的 top_n 条（防幻觉：只从候选中选）。
-
-    向量召回按语义距离，但「距离近」不等于「能回答」；这里让大模型再判一次
-    相关性并排序，提升精排质量。LLM 失败时降级为按距离排序。
-    """
+    """对向量召回候选做 CrossEncoder 精排，失败时按距离排序。"""
     if not chunks:
         return []
-    if len(chunks) <= top_n:
-        return chunks
-
-    lines = [f"{i + 1}. 问：{c['question']} 答：{c['answer']}" for i, c in enumerate(chunks)]
-    user = "【用户问题】" + query + "\n\n【候选问答】\n" + "\n".join(lines)
-
+    if len(chunks) <= 1 or not config.Config.RERANKER_ENABLED:
+        return chunks[:top_n]
     try:
-        result = llm.complete(
-            system=_RERANK_SYSTEM.format(top_n=top_n),
-            user=user,
-            json_mode=True,
-            max_tokens=100,
-        )
-        ranked = result.get("ranked", []) if isinstance(result, dict) else []
-        picked = []
-        for idx in ranked:
-            if isinstance(idx, int) and 1 <= idx <= len(chunks):
-                picked.append(chunks[idx - 1])
-            if len(picked) >= top_n:
-                break
-        if picked:
-            return picked
-    except Exception as e:  # noqa: BLE001
-        logger.warning("LLM 重排失败，降级为按距离排序：%s", e)
+        model = _get_reranker()
+        scores = model.predict([_chunk_pair(query, chunk) for chunk in chunks])
+        ranked = sorted(
+            zip(chunks, scores), key=lambda item: float(item[1]), reverse=True
+        )[:top_n]
+        return [{**chunk, "rerank_score": float(score)} for chunk, score in ranked]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("本地 reranker 不可用，降级为向量距离排序：%s", exc)
+        return sorted(chunks, key=lambda c: c.get("distance") if c.get("distance") is not None else 999.0)[:top_n]
 
-    # 降级：按语义距离从小到大（越相关越靠前）取前 top_n
-    return sorted(chunks, key=lambda c: c.get("distance") or 999.0)[:top_n]
+
+def rerank_documents(query: str, chunks: list[dict], top_n: int = 3) -> list[dict]:
+    """文档块使用同一 CrossEncoder 精排入口，保留独立名称方便调用方表达数据类型。"""
+    return rerank(query, chunks, top_n=top_n)
 
 
 # ---------------------------------------------------------------------------
@@ -419,12 +437,17 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
 
 
 def get_docs_collection():
-    """获取（或创建）名为 docs 的向量集合，用于存放切块后的文档。"""
+    """获取文档向量集合；Qdrant 不可用时回退到 Chroma。"""
+    global _docs_collection
+    if _docs_collection is not None:
+        return _docs_collection
     config.Config.ensure_dirs()
-    client = chromadb.PersistentClient(path=str(config.Config.CHROMA_DIR))
-    return client.get_or_create_collection(
-        name="docs", embedding_function=_get_embedding_fn()
-    )
+    with _collection_lock:
+        if _docs_collection is None:
+            _docs_collection = create_store(
+                "docs", _get_embedding_fn(), config.Config, config.Config.CHROMA_DIR
+            )
+    return _docs_collection
 
 
 def ingest_document_text(text: str, source_name: str) -> dict:
@@ -486,15 +509,11 @@ def ingest_documents(docs_dir=None, reset: bool = True) -> int:
         logger.warning("文档目录里没有 .md/.txt 文件：%s", docs_dir)
         return 0
 
-    client = chromadb.PersistentClient(path=str(config.Config.CHROMA_DIR))
     if reset:
-        try:
-            client.delete_collection("docs")
-        except Exception:
-            pass
-        collection = client.create_collection(
-            name="docs", embedding_function=_get_embedding_fn()
-        )
+        collection = get_docs_collection()
+        existing = collection.get().get("ids", [])
+        if existing:
+            collection.delete(ids=existing)
     else:
         collection = get_docs_collection()
 
