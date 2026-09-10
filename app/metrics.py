@@ -163,11 +163,21 @@ def rag_quality() -> dict:
         evaluation = rag_eval.evaluate()
     except Exception:
         evaluation = {}
+    cache = rag.cache_stats()
     return {
         "recall_at_5": evaluation.get("recall_at_k"),
+        "precision_at_1": evaluation.get("precision_at_1"),
         "precision_at_3": evaluation.get("precision_at_k"),
         "hit_rate": evaluation.get("hit_rate"),
         "case_count": evaluation.get("case_count", 0),
         "guard_pass_rate": evaluation.get("guard_pass_rate"),
-        "cache": rag.cache_stats(),
+        "failure_reason_counts": evaluation.get("failure_reason_counts", {}),
+        "guard_reason_counts": evaluation.get("guard_reason_counts", {}),
+        "cache": cache,
+        "cache_layers": cache.get("layer_hits", {}),
+        "vector_hit_rate": (
+            round(cache["vector_hit_count"] / cache["query_count"], 4)
+            if cache.get("query_count") else None
+        ),
+        "direct_answer_rate": cache.get("answer_rate"),
     }

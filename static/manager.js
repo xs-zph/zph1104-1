@@ -39,7 +39,7 @@ function renderCategories(distribution) {
   $("category-distribution").innerHTML = entries.length ? entries.map(([name, count], index) => `<div class="category-row"><div class="category-label"><span class="category-rank">${String(index + 1).padStart(2, "0")}</span><span>${escapeHtml(name)}</span><b>${count}</b></div><div class="category-track"><i style="width:${Math.max(4, (count || 0) / max * 100)}%"></i></div></div>`).join("") : '<div class="empty">没有匹配的分类</div>';
 }
 function percent(value) { return value == null ? "-" : `${Math.round(value * 100)}%`; }
-function renderRagQuality(data) { const quality = data.rag_quality || {}; const cache = quality.cache || {}; const cacheRate = cache.hit_rate == null ? 0 : Math.max(0, Math.min(1, cache.hit_rate)); $("rag-recall").textContent = percent(quality.recall_at_5); $("rag-precision").textContent = percent(quality.precision_at_3); $("rag-hit-rate").textContent = percent(quality.hit_rate); $("rag-guard-rate").textContent = percent(quality.guard_pass_rate); $("rag-llm-saved").textContent = cache.llm_saved ?? "0"; $("rag-cache-rate").textContent = percent(cache.hit_rate); $("rag-memory-hit").textContent = cache.memory_hit ?? 0; $("rag-redis-hit").textContent = cache.redis_hit ?? 0; $("rag-eval-count").textContent = `${quality.case_count || 0} 条评测样本`; const orbit = document.querySelector(".cache-orbit"); if (orbit) orbit.style.setProperty("--cache-rate", `${cacheRate * 100}%`); }
+function renderRagQuality(data) { const quality = data.rag_quality || {}; const cache = quality.cache || {}; const layers = quality.cache_layers || cache.layer_hits || {}; const cacheRate = cache.hit_rate == null ? 0 : Math.max(0, Math.min(1, cache.hit_rate)); $("rag-recall").textContent = percent(quality.recall_at_5); $("rag-precision-1").textContent = percent(quality.precision_at_1); $("rag-precision-3").textContent = percent(quality.precision_at_3); $("rag-hit-rate").textContent = percent(quality.hit_rate); $("rag-guard-rate").textContent = percent(quality.guard_pass_rate); $("rag-llm-saved").textContent = cache.llm_saved ?? "0"; $("rag-cache-rate").textContent = percent(cache.hit_rate); $("rag-memory-hit").textContent = layers.memory ?? 0; $("rag-redis-hit").textContent = layers.redis ?? 0; $("rag-semantic-hit").textContent = layers.semantic ?? 0; $("rag-vector-hit").textContent = layers.vector ?? 0; $("rag-direct-rate").textContent = percent(quality.direct_answer_rate); $("rag-eval-count").textContent = `${quality.case_count || 0} 条评测样本`; const orbit = document.querySelector(".cache-orbit"); if (orbit) orbit.style.setProperty("--cache-rate", `${cacheRate * 100}%`); }
 function renderVisuals(data) { renderRoutingMix(data); renderTrend(data.daily_workload || []); renderCategories(data.category_distribution || {}); renderAgentPerformance(data.agent_performance || []); renderRagQuality(data); }
 async function loadDashboard() {
   const data = await api("/api/metrics");
@@ -55,9 +55,38 @@ async function loadStats() {
   const tags = Object.entries(data.feedback_tags || {}).map(([key, value]) => `<span>${escapeHtml(key)} ${value}</span>`).join("") || "暂无反馈标签";
   $("manager-stats").innerHTML = `<div class="stat-block"><b>高频问题</b><div class="stat-tags">${questions}</div></div><div class="stat-block"><b>反馈标签</b><div class="stat-tags">${tags}</div></div>`;
 }
-$("refresh-dashboard-btn").addEventListener("click", () => Promise.all([loadDashboard(), loadStats()]));
+async function loadAfterSales() {
+  const type = $("manager-after-sale-type").value;
+  const status = $("manager-after-sale-status").value;
+  const order = $("manager-after-sale-order").value.trim();
+  const params = new URLSearchParams({ limit: "100" });
+  if (type) params.set("request_type", type);
+  if (status) params.set("status", status);
+  if (order) params.set("order_id", order);
+  const items = await api(`/api/manager/after-sales?${params.toString()}`);
+  $("after-sale-count").textContent = `${items.length} 条申请`;
+  $("manager-after-sale-list").innerHTML = items.length ? items.map((item) => `<button class="after-sale-queue-row" data-request-no="${escapeHtml(item.request_no || "")}"><span class="after-sale-queue-main"><b>${escapeHtml(item.request_type_label || "售后申请")}</b><small>${escapeHtml(item.request_no || "")}</small></span><span>${escapeHtml(item.order_id || "无订单号")}</span><span class="after-sale-status">${escapeHtml(item.status_label || "处理中")}</span><span>${escapeHtml(item.source_assigned_to || "未分配")}</span><time>${escapeHtml(item.updated_at || item.created_at || "")}</time></button>`).join("") : '<div class="empty">暂无匹配的售后申请</div>';
+  document.querySelectorAll("[data-request-no]").forEach((button) => button.addEventListener("click", () => loadAfterSaleAudit(button.dataset.requestNo)));
+}
+async function loadAfterSaleAudit(requestNo) {
+  const panel = $("manager-after-sale-audit");
+  try {
+    const result = await api(`/api/manager/after-sales/${encodeURIComponent(requestNo)}/audit`);
+    const rows = (result.audit || []).map((item) => `<div class="audit-timeline-row"><time>${escapeHtml(item.created_at || "")}</time><b>${escapeHtml(item.action_label || "系统记录")}</b><span>${escapeHtml(item.operator || "系统")}</span><p>${escapeHtml(item.detail || "")}</p></div>`).join("");
+    const attempts = (result.attempts || []).map((item) => `<div class="audit-timeline-row attempt-row"><time>${escapeHtml(item.created_at || "")}</time><b>第 ${escapeHtml(item.attempt_no || "")} 次提交：${escapeHtml(item.status === "failed" ? "失败" : item.status === "succeeded" ? "成功" : "执行中")}</b><span>${escapeHtml(item.operator || "系统")}</span><p>${escapeHtml(item.error_message || item.result || "")}</p></div>`).join("");
+    panel.classList.remove("hidden");
+    panel.innerHTML = `<div class="after-sale-audit-head"><b>${escapeHtml(result.request?.request_type_label || "售后申请")} ${escapeHtml(result.request?.request_no || requestNo)}</b><button class="btn btn-ghost btn-xs" type="button" id="close-after-sale-audit">关闭</button></div>${attempts}${rows || '<div class="empty">暂无审计记录</div>'}`;
+    $("close-after-sale-audit").addEventListener("click", () => panel.classList.add("hidden"));
+  } catch (error) {
+    window.alert(error.message);
+  }
+}
+$("refresh-dashboard-btn").addEventListener("click", () => Promise.all([loadDashboard(), loadStats(), loadAfterSales()]));
 $("dashboard-filter").addEventListener("input", () => { if (dashboardData) { renderCategories(dashboardData.category_distribution || {}); renderAgentPerformance(dashboardData.agent_performance || []); } });
+$("refresh-after-sale-btn").addEventListener("click", loadAfterSales);
+$("manager-after-sale-type").addEventListener("change", loadAfterSales);
+$("manager-after-sale-status").addEventListener("change", loadAfterSales);
 $("logout-btn").addEventListener("click", async () => { await fetch("/api/logout", { method: "POST" }); window.location.href = "/login"; });
 window.addEventListener("DOMContentLoaded", async () => {
-  try { const me = await api("/api/me"); if (me.role !== "manager") { window.location.href = me.role === "admin" ? "/admin" : me.role === "agent" ? "/staff" : "/"; return; } $("manager-username").textContent = `经理：${me.username}`; await Promise.all([loadDashboard(), loadStats()]); } catch (_) { window.location.href = "/login"; }
+  try { const me = await api("/api/me"); if (me.role !== "manager") { window.location.href = me.role === "admin" ? "/admin" : me.role === "agent" ? "/staff" : "/"; return; } $("manager-username").textContent = `经理：${me.username}`; await Promise.all([loadDashboard(), loadStats(), loadAfterSales()]); } catch (_) { window.location.href = "/login"; }
 });

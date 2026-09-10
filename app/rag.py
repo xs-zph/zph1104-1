@@ -21,6 +21,8 @@ import threading
 import uuid
 import json
 import unicodedata
+from contextlib import contextmanager
+from contextvars import ContextVar
 from collections import OrderedDict
 from datetime import datetime
 
@@ -100,8 +102,22 @@ _collection_lock = threading.Lock()
 
 _faq_cache = OrderedDict()
 _faq_cache_lock = threading.Lock()
-_faq_cache_stats = {"memory_hit": 0, "redis_hit": 0, "semantic_hit": 0, "miss": 0, "store": 0, "faq_direct": 0}
+_faq_cache_stats = {
+    "memory_hit": 0,
+    "redis_hit": 0,
+    "semantic_hit": 0,
+    "miss": 0,
+    "store": 0,
+    "faq_direct": 0,
+    "query_count": 0,
+    "cache_hit_count": 0,
+    "vector_hit_count": 0,
+    "answer_hit_count": 0,
+    "no_answer_count": 0,
+    "layer_hits": {"memory": 0, "redis": 0, "semantic": 0, "vector": 0},
+}
 _faq_semantic_cache = []
+_cache_stats_enabled = ContextVar("cache_stats_enabled", default=True)
 
 
 def load_faq_variants(path=None) -> dict[str, list[str]]:
@@ -126,6 +142,15 @@ def normalize_question(text: str) -> str:
     replacements = {
         "请问": "", "能不能": "能否", "可不可以": "能否", "怎么弄": "怎么办",
         "咋办": "怎么办", "多少钱": "价格多少", "多长时间": "多久", "多长": "多久",
+        "啥时候": "多久", "什么时候": "多久", "哪儿": "哪里",
+        "能退": "退货", "退呀": "退货", "退吗": "退货",
+        "条见": "条件", "条健": "条件",
+        "还能保不": "保修", "能保不": "保修", "咋报修": "申请维修",
+        "怎么报修": "申请维修", "报修": "申请维修",
+        "地址填错了": "修改收货地址", "收货地址填错了": "修改收货地址",
+        "还能改么": "能否修改", "还能改吗": "能否修改",
+        "退的钱": "退款", "钱回来": "退款到账",
+        "发票怎么开": "开发票", "怎么开电子发票": "开发票", "怎么申请维修": "申请维修",
         "我的快递到哪了": "物流查询", "我的快递在哪": "物流查询",
         "我的快递在哪": "物流查询", "快递到哪了": "物流查询", "查快递": "物流查询",
     }
@@ -153,7 +178,10 @@ def _cache_get(question: str) -> tuple[dict | None, str | None]:
         item = _faq_cache.get(key)
         if item is not None:
             _faq_cache.move_to_end(key)
-            _faq_cache_stats["memory_hit"] += 1
+            if _cache_stats_enabled.get():
+                _faq_cache_stats["memory_hit"] += 1
+                _faq_cache_stats["layer_hits"]["memory"] += 1
+                _faq_cache_stats["cache_hit_count"] += 1
             return {**item, "cache_hit": True, "cache_layer": "memory"}, key
     raw = redis_store.get_cache(redis_store.cache_key("faq", key))
     if raw:
@@ -163,12 +191,16 @@ def _cache_get(question: str) -> tuple[dict | None, str | None]:
                 _faq_cache[key] = item
                 _faq_cache.move_to_end(key)
                 _trim_faq_cache()
-                _faq_cache_stats["redis_hit"] += 1
+                if _cache_stats_enabled.get():
+                    _faq_cache_stats["redis_hit"] += 1
+                    _faq_cache_stats["layer_hits"]["redis"] += 1
+                    _faq_cache_stats["cache_hit_count"] += 1
             return {**item, "cache_hit": True, "cache_layer": "redis"}, key
         except (TypeError, ValueError, json.JSONDecodeError):
             logger.warning("FAQ Redis 缓存内容无效，忽略该条：%s", key)
     with _faq_cache_lock:
-        _faq_cache_stats["miss"] += 1
+        if _cache_stats_enabled.get():
+            _faq_cache_stats["miss"] += 1
     return None, key
 
 
@@ -191,8 +223,57 @@ def _semantic_cache_get(question: str) -> tuple[dict | None, str | None]:
     if best_item is None or best_distance > config.Config.FAQ_SEMANTIC_CACHE_DISTANCE:
         return None, None
     with _faq_cache_lock:
-        _faq_cache_stats["semantic_hit"] = _faq_cache_stats.get("semantic_hit", 0) + 1
+        if _cache_stats_enabled.get():
+            _faq_cache_stats["semantic_hit"] = _faq_cache_stats.get("semantic_hit", 0) + 1
+    if _cache_stats_enabled.get():
+        _record_cache_layer_hit("semantic")
     return {**best_item["answer"], "distance": 0.0, "cache_hit": True, "cache_layer": "semantic", "semantic_distance": best_distance}, _cache_key(question)
+
+
+def _record_cache_layer_hit(layer: str) -> None:
+    """记录一次请求命中的缓存层；调用方已持有或即将获取统计锁。"""
+    with _faq_cache_lock:
+        layers = _faq_cache_stats.setdefault("layer_hits", {})
+        layers[layer] = layers.get(layer, 0) + 1
+        _faq_cache_stats["cache_hit_count"] += 1
+
+
+def _record_answer_hit(layer: str) -> None:
+    """记录一次可以直接回答 FAQ 的请求，并区分最终来源层。"""
+    if not _cache_stats_enabled.get():
+        return
+    with _faq_cache_lock:
+        layers = _faq_cache_stats.setdefault("layer_hits", {})
+        layers.setdefault(layer, 0)
+        if layer == "vector":
+            layers[layer] += 1
+            _faq_cache_stats["vector_hit_count"] += 1
+            _faq_cache_stats["faq_direct"] += 1
+        _faq_cache_stats["answer_hit_count"] += 1
+
+
+@contextmanager
+def suspend_cache_stats():
+    """暂停运行期缓存统计，供离线评测等观测任务使用。"""
+    token = _cache_stats_enabled.set(False)
+    try:
+        yield
+    finally:
+        _cache_stats_enabled.reset(token)
+
+
+def reset_cache_stats() -> None:
+    """重置运行期统计，不清理 FAQ 内容缓存。主要用于测试和新一轮观测。"""
+    with _faq_cache_lock:
+        for key in (
+            "memory_hit", "redis_hit", "semantic_hit", "miss", "store",
+            "faq_direct", "query_count", "cache_hit_count", "vector_hit_count",
+            "answer_hit_count", "no_answer_count",
+        ):
+            _faq_cache_stats[key] = 0
+        _faq_cache_stats["layer_hits"] = {
+            "memory": 0, "redis": 0, "semantic": 0, "vector": 0,
+        }
 
 
 def _trim_faq_cache() -> None:
@@ -210,9 +291,8 @@ def _cache_put_internal(key: str, answer: dict, count_direct: bool = False) -> N
         _faq_cache[key] = payload
         _faq_cache.move_to_end(key)
         _trim_faq_cache()
-        _faq_cache_stats["store"] += 1
-        if count_direct:
-            _faq_cache_stats["faq_direct"] += 1
+        if _cache_stats_enabled.get():
+            _faq_cache_stats["store"] += 1
     try:
         redis_store.set_cache(
             redis_store.cache_key("faq", key),
@@ -269,12 +349,13 @@ def clear_faq_cache() -> None:
 def cache_stats() -> dict:
     with _faq_cache_lock:
         stats = dict(_faq_cache_stats)
+        stats["layer_hits"] = dict(_faq_cache_stats.get("layer_hits", {}))
         stats["memory_size"] = len(_faq_cache)
         stats["semantic_size"] = len(_faq_semantic_cache)
-    # semantic_hit 发生在 _cache_get miss 之后，因此 miss 已经代表了这次请求，不能重复计入。
-    total = stats["memory_hit"] + stats["redis_hit"] + stats["miss"]
-    stats["hit_rate"] = round((stats["memory_hit"] + stats["redis_hit"] + stats.get("semantic_hit", 0)) / total, 4) if total else None
-    stats["llm_saved"] = stats["faq_direct"] + stats["memory_hit"] + stats["redis_hit"] + stats.get("semantic_hit", 0)
+    query_count = stats["query_count"]
+    stats["hit_rate"] = round(stats["cache_hit_count"] / query_count, 4) if query_count else None
+    stats["answer_rate"] = round(stats["answer_hit_count"] / query_count, 4) if query_count else None
+    stats["llm_saved"] = stats["answer_hit_count"]
     return stats
 
 
@@ -443,23 +524,39 @@ def best_answer(question: str, top_k: int = None) -> dict | None:
     """
     if _is_live_data_question(question):
         return None
+    if _cache_stats_enabled.get():
+        with _faq_cache_lock:
+            _faq_cache_stats["query_count"] += 1
     cached, key = _cache_get(question)
     if cached is not None:
+        _record_answer_hit(cached.get("cache_layer") or "memory")
         return cached
     semantic_cached, semantic_key = _semantic_cache_get(question)
     if semantic_cached is not None:
         _cache_put_internal(semantic_key, semantic_cached)
+        _record_answer_hit("semantic")
         return semantic_cached
     hits = rerank(question, retrieve(question, top_k=top_k), top_n=3)
     if not hits:
+        if _cache_stats_enabled.get():
+            with _faq_cache_lock:
+                _faq_cache_stats["no_answer_count"] += 1
         return None
     best = hits[0]
     distance = best.get("distance")
     if distance is None or distance > config.Config.RAG_MAX_DISTANCE:
+        if _cache_stats_enabled.get():
+            with _faq_cache_lock:
+                _faq_cache_stats["no_answer_count"] += 1
         return None
     if not (best.get("answer") or "").strip():
+        if _cache_stats_enabled.get():
+            with _faq_cache_lock:
+                _faq_cache_stats["no_answer_count"] += 1
         return None
+    best = {**best, "cache_layer": "vector"}
     _cache_put(key, best)
+    _record_answer_hit("vector")
     try:
         vector = _get_embedding_fn()([question])[0]
         with _faq_cache_lock:
@@ -539,13 +636,19 @@ def enable_entry(faq_id: int, operator: str = "system") -> dict:
 
 _reranker = None
 _reranker_lock = threading.Lock()
+_reranker_unavailable = False
+_reranker_warning_logged = False
 
 
 def _get_reranker():
     """懒加载本地 CrossEncoder；模型不可用时由调用方按向量距离降级。"""
-    global _reranker
+    global _reranker, _reranker_unavailable
+    if _reranker_unavailable:
+        raise RuntimeError("reranker unavailable")
     if _reranker is None:
         with _reranker_lock:
+            if _reranker_unavailable:
+                raise RuntimeError("reranker unavailable")
             if _reranker is None:
                 from sentence_transformers import CrossEncoder
 
@@ -557,8 +660,13 @@ def _get_reranker():
                     )
                 except Exception:
                     if not config.Config.RERANKER_ALLOW_DOWNLOAD:
+                        _reranker_unavailable = True
                         raise
-                    _reranker = CrossEncoder(model_name)
+                    try:
+                        _reranker = CrossEncoder(model_name)
+                    except Exception:
+                        _reranker_unavailable = True
+                        raise
                 logger.info("已启用本地 reranker：%s", model_name)
     return _reranker
 
@@ -567,6 +675,50 @@ def _chunk_pair(query: str, chunk: dict) -> list[str]:
     question = chunk.get("question") or chunk.get("text") or ""
     answer = chunk.get("answer") or ""
     return [query, f"{question}\n{answer}".strip()]
+
+
+def _lexical_rerank_score(query: str, chunk: dict) -> float:
+    """CrossEncoder 不可用时，用中文短语重合修正近邻词误排序。"""
+    query_text = normalize_question(query)
+    candidate_text = normalize_question(chunk.get("question") or chunk.get("text") or "")
+    if not query_text or not candidate_text:
+        return 0.0
+
+    def ngrams(value: str, size: int) -> set[str]:
+        return {
+            value[index:index + size]
+            for index in range(max(0, len(value) - size + 1))
+        }
+
+    query_bigrams = ngrams(query_text, 2)
+    query_trigrams = ngrams(query_text, 3)
+    candidate_bigrams = ngrams(candidate_text, 2)
+    candidate_trigrams = ngrams(candidate_text, 3)
+    bigram_recall = (
+        len(query_bigrams & candidate_bigrams) / len(query_bigrams)
+        if query_bigrams else 0.0
+    )
+    trigram_recall = (
+        len(query_trigrams & candidate_trigrams) / len(query_trigrams)
+        if query_trigrams else 0.0
+    )
+    domain_terms = (
+        "退货", "退款", "发票", "开发票", "下载", "维修", "售后", "故障",
+        "保修", "发货", "到账", "物流", "地址", "修改", "申请", "流程",
+        "条件", "多久", "包裹", "拒收",
+    )
+    term_overlap = sum(
+        1 for term in domain_terms
+        if term in query_text and term in candidate_text
+    )
+    exact_bonus = 0.35 if candidate_text in query_text or query_text in candidate_text else 0.0
+    return round(
+        bigram_recall * 0.35
+        + trigram_recall * 0.35
+        + min(0.3, term_overlap * 0.1)
+        + exact_bonus,
+        6,
+    )
 
 
 def rerank(query: str, chunks: list[dict], top_n: int = 3) -> list[dict]:
@@ -583,8 +735,22 @@ def rerank(query: str, chunks: list[dict], top_n: int = 3) -> list[dict]:
         )[:top_n]
         return [{**chunk, "rerank_score": float(score)} for chunk, score in ranked]
     except Exception as exc:  # noqa: BLE001
-        logger.warning("本地 reranker 不可用，降级为向量距离排序：%s", exc)
-        return sorted(chunks, key=lambda c: c.get("distance") if c.get("distance") is not None else 999.0)[:top_n]
+        global _reranker_warning_logged
+        if not _reranker_warning_logged:
+            logger.warning("本地 reranker 不可用，降级为词面 + 向量距离排序：%s", exc)
+            _reranker_warning_logged = True
+        ranked = sorted(
+            chunks,
+            key=lambda chunk: (
+                _lexical_rerank_score(query, chunk),
+                -(chunk.get("distance") if chunk.get("distance") is not None else 999.0),
+            ),
+            reverse=True,
+        )
+        return [
+            {**chunk, "rerank_score": _lexical_rerank_score(query, chunk)}
+            for chunk in ranked[:top_n]
+        ]
 
 
 def rerank_documents(query: str, chunks: list[dict], top_n: int = 3) -> list[dict]:

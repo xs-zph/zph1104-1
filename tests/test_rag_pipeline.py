@@ -19,16 +19,47 @@ class RerankerTests(unittest.TestCase):
     def test_normalize_question_collapses_common_variants(self):
         self.assertEqual(rag.normalize_question("请问 退货需要几天？"), rag.normalize_question("退货需要几天"))
         self.assertEqual(rag.normalize_question("我的快递到哪了"), "物流查询")
+        self.assertIn("开发票", rag.normalize_question("电子发票怎么开"))
+
+    def test_normalize_question_understands_colloquial_and_typo_variants(self):
+        self.assertIn("退货", rag.normalize_question("签收后几天能退呀？"))
+        self.assertIn("条件", rag.normalize_question("退货有啥条见啊"))
+        self.assertIn("保修", rag.normalize_question("耳机坏了还能保不？"))
+        self.assertIn("申请维修", rag.normalize_question("耳机坏了咋报修？"))
+        self.assertIn("修改收货地址", rag.normalize_question("地址填错了还能改么？"))
 
     def test_cache_hit_skips_retrieval(self):
         rag.clear_faq_cache()
         answer = {"question": "退货", "answer": "可退", "distance": 0.1}
         with patch.object(rag, "retrieve", return_value=[answer]), patch.object(rag, "rerank", return_value=[answer]):
-            self.assertEqual(rag.best_answer("退货"), answer)
+            first = rag.best_answer("退货")
+        self.assertEqual(first["answer"], answer["answer"])
+        self.assertEqual(first["cache_layer"], "vector")
         with patch.object(rag, "retrieve", side_effect=AssertionError("不应再次检索")):
             cached = rag.best_answer("退货！")
         self.assertEqual(cached["answer"], "可退")
         self.assertTrue(cached["cache_hit"])
+        self.assertEqual(cached["cache_layer"], "memory")
+
+    def test_cache_stats_deduplicate_llm_savings_by_request(self):
+        rag.clear_faq_cache()
+        rag.reset_cache_stats()
+        answer = {"question": "退货", "answer": "可退", "distance": 0.1}
+        with patch.object(rag, "_get_embedding_fn", return_value=lambda items: [[1.0, 0.0] for _ in items]), \
+             patch.object(rag, "retrieve", return_value=[answer]), \
+             patch.object(rag, "rerank", return_value=[answer]):
+            rag.best_answer("退货")
+            rag.best_answer("退货！")
+
+        stats = rag.cache_stats()
+        self.assertEqual(stats["query_count"], 2)
+        self.assertEqual(stats["cache_hit_count"], 1)
+        self.assertEqual(stats["vector_hit_count"], 1)
+        self.assertEqual(stats["answer_hit_count"], 2)
+        self.assertEqual(stats["llm_saved"], 2)
+        self.assertEqual(stats["layer_hits"]["memory"], 1)
+        self.assertEqual(stats["layer_hits"]["vector"], 1)
+        self.assertEqual(stats["hit_rate"], 0.5)
 
     def test_semantic_cache_reuses_confirmed_faq_answer(self):
         rag.clear_faq_cache()
@@ -98,6 +129,19 @@ class RerankerTests(unittest.TestCase):
             result = rag.rerank("问题", chunks, top_n=2)
 
         self.assertEqual([item["question"] for item in result], ["强相关", "弱相关"])
+
+    def test_reranker_fallback_prefers_matching_chinese_phrase(self):
+        chunks = [
+            {"question": "退款多久能到账？", "answer": "退款答案", "distance": 0.08},
+            {"question": "退货需要满足什么条件？", "answer": "退货答案", "distance": 0.2},
+        ]
+        with patch.object(Config, "RERANKER_ENABLED", True), patch.object(
+            rag, "_get_reranker", side_effect=RuntimeError("model unavailable")
+        ):
+            result = rag.rerank("我收到货后几天内可以退货？", chunks, top_n=2)
+
+        self.assertEqual(result[0]["question"], "退货需要满足什么条件？")
+        self.assertGreater(result[0]["rerank_score"], result[1]["rerank_score"])
 
 
 if __name__ == "__main__":

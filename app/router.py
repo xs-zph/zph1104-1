@@ -15,7 +15,7 @@ import json
 import logging
 import time
 
-from app import agent, cache, cancel_skill, categories, classifier, config, daily, db, memory, multi_agent, privacy, profile, rag, responder, refund_skill, return_skill
+from app import agent, after_sale, cache, cancel_skill, categories, classifier, config, daily, db, memory, multi_agent, privacy, profile, rag, repair_skill, responder, refund_skill, return_skill
 
 logger = logging.getLogger("app.router")
 ticket_logger = logging.getLogger("tickets")
@@ -44,6 +44,13 @@ _SERVICE_FEEDBACK_KEYWORDS = (
     "等了好久", "等很久了", "一直没回复", "快点回复", "赶紧回复", "麻烦快点",
     "我很着急", "有点着急", "很着急", "急死了", "不耐烦", "不满意", "很失望",
     "服务真差", "服务太差", "不靠谱", "无语", "服了",
+    "生气", "愤怒", "气死", "被气到", "被气坏", "烦死", "好烦", "火大", "恼火",
+    "气炸了", "气炸我了", "太气人",
+)
+
+_ANGER_FEEDBACK_KEYWORDS = (
+    "生气", "愤怒", "气死", "被气到", "被气坏", "烦死", "好烦", "火大", "恼火",
+    "气炸了", "气炸我了", "太气人",
 )
 
 
@@ -57,6 +64,12 @@ def _has_service_feedback(text: str) -> bool:
     """判断客户是否表达了轻度着急、不满、催促或等待过久。"""
     t = (text or "").strip().lower()
     return any(k in t for k in _SERVICE_FEEDBACK_KEYWORDS)
+
+
+def _has_anger_feedback(text: str) -> bool:
+    """判断客户是否明确表达了生气、愤怒等情绪。"""
+    t = (text or "").strip().lower()
+    return any(k in t for k in _ANGER_FEEDBACK_KEYWORDS)
 
 
 def _is_service_feedback(text: str) -> bool:
@@ -83,10 +96,16 @@ def _with_empathy(reply: str, service_feedback: bool) -> str:
 def _service_feedback_record(text: str, trace: list, mk) -> dict:
     """本地生成服务反馈安抚语，避免再次调用 LLM。"""
     trace.append("service_feedback")
-    reply = "抱歉让您久等了，我在这里。您可以直接告诉我想查订单、物流、退款还是售后，我马上帮您处理。"
+    if _has_anger_feedback(text):
+        reply = (
+            "我理解您现在很生气，确实让人不舒服。您可以直接告诉我发生了什么，"
+            "我先帮您处理；如果是订单、物流、退款或售后问题，我们一步一步解决。"
+        )
+    else:
+        reply = "抱歉让您久等了，我在这里。您可以直接告诉我想查订单、物流、退款还是售后，我马上帮您处理。"
     record = mk(
         category="服务反馈", confidence=1.0,
-        reason="客户反馈响应较慢，本地即时安抚，不调用模型或转人工",
+        reason="客户表达等待或负面情绪，本地即时安抚，不调用模型或转人工",
         status="auto", reply=reply, reply_source="chat",
     )
     record["quick_replies"] = [
@@ -164,6 +183,8 @@ _DATA_QUERY_KEYWORDS = (
     "我的快递", "查物流", "查快递", "物流到哪", "快递到哪", "到哪了", "什么时候到", "运单",
     # 查我的退款进度
     "退款进度", "退款到账", "退款状态", "退款到哪", "钱什么时候到", "退款已经申请",
+    # 查统一售后申请进度
+    "售后申请进度", "退货申请进度", "取消申请进度", "售后进度",
 )
 
 # 明显的跨场景组合诉求。个人数据查询只有在没有混入其它业务场景时，
@@ -185,6 +206,8 @@ def _is_data_query(text: str) -> bool:
     t = text or ""
     if any(k in t for k in _COMPLAINT_KEYWORDS):
         return False
+    if any(k in t for k in ("售后申请进度", "退货申请进度", "取消申请进度", "售后进度")):
+        return True
     if any(k in t for k in _OTHER_BUSINESS_INTENT_KEYWORDS):
         return False
     return any(k in t for k in _DATA_QUERY_KEYWORDS) or any(
@@ -197,6 +220,32 @@ _ESCALATE_INTENT_KEYWORDS = (
     "投诉", "赔偿", "纠纷", "扯皮", "转人工", "找人工",
     "拒绝退款", "拒不退款", "不给退款", "不处理退款", "退款一直不处理",
 )
+
+
+def is_standalone_ai_request(text: str | None) -> bool:
+    """判断人工接管期间的消息是否是在发起新的 AI 自助请求。
+
+    人工处理中仍允许客户补充订单号、故障描述和证据；只有明确的新业务
+    意图才结束旧人工会话，重新进入 AI 路由，避免把「我想退款」追加到
+    一张维修或投诉工单里。
+    """
+    value = (text or "").strip()
+    if not value:
+        return False
+    if any(term in value for term in (
+        "补充", "追加", "再说一下", "故障现象", "问题描述", "凭证", "照片", "视频",
+        "订单号是", "运单号是",
+    )):
+        return False
+    return any(term in value for term in (
+        "我要退款", "我想退款", "想要退款", "申请退款", "我要退钱", "我想退钱",
+        "我要退货", "我想退货", "申请退货", "退货退款",
+        "我要维修", "我想维修", "申请维修", "我要报修", "申请报修",
+        "取消订单", "我要取消", "帮我取消",
+        "我的快递", "我的物流", "查物流", "查快递", "我的订单", "查订单",
+        "退款进度", "退款状态", "退款到账", "售后申请进度", "售后进度",
+    ))
+
 
 _REFUND_OPTIONS = [
     {"label": "未发货，想取消订单", "value": "未发货，想取消订单"},
@@ -277,6 +326,10 @@ def _refund_skill_reply(safe_text: str, history: list[dict], username: str | Non
     """执行退款多轮 Skill；只在上下文确认后处理单独订单号。"""
     if refund_skill.needs_order_id_for_refund_choice(safe_text, history):
         return "好的，我来帮您查询退款进度。请提供订单号，我会先核对这笔订单。"
+    # 当前轮次已经明确进入退款申请的订单号/原因补充阶段时，
+    # 必须优先交给申请 Skill，不能被更早的「退款进度」历史抢走。
+    if _refund_application_context(safe_text, history):
+        return None
     order_id = refund_skill.extract_order_id(safe_text)
     if not refund_skill.is_refund_order_followup(safe_text, history):
         return None
@@ -292,8 +345,596 @@ def _refund_skill_reply(safe_text: str, history: list[dict], username: str | Non
     return raw
 
 
+def _refund_application_reason(text: str, history: list[dict]) -> str | None:
+    """从退款申请上下文提取客户选择的原因。"""
+    recent = " ".join(
+        str(item.get("content") or "") for item in (history or [])[-10:]
+    )
+    value = f"{recent} {text or ''}"
+    for reason in (
+        "商品有质量问题",
+        "质量问题",
+        "商品损坏",
+        "商品破损",
+        "不想要",
+        "不喜欢",
+        "拍错",
+        "买错",
+        "不合适",
+        "与描述不符",
+        "描述不符",
+        "其他退款问题",
+    ):
+        if reason in value:
+            return reason
+    return None
+
+
+def _refund_application_context(text: str, history: list[dict]) -> bool:
+    """判断消息是否处于退款申请的订单号/问题补充阶段。"""
+    recent_items = (history or [])[-10:]
+    recent = " ".join(str(item.get("content") or "") for item in recent_items)
+    if "退款原因" not in recent and "退款" not in recent:
+        return False
+
+    # 只看最近一次明确的「申请退款」意图。更早轮次里的「退款进度」
+    # 可能只是上一件事，不能污染当前正在收集订单号和退款原因的流程。
+    application_anchor = -1
+    query_anchor = -1
+    for index, item in enumerate(recent_items):
+        if item.get("role") != "user":
+            continue
+        content = str(item.get("content") or "")
+        if any(term in content for term in (
+            "我要退款", "申请退款", "想退款", "我要退钱", "退款申请",
+        )) and not any(term in content for term in (
+            "退款进度", "退款状态", "查询退款", "查询进度", "退款到账",
+        )):
+            application_anchor = index
+        if any(term in content for term in (
+            "退款进度", "退款状态", "查询退款", "查询进度", "退款到账",
+        )):
+            query_anchor = index
+    if query_anchor > application_anchor:
+        return False
+    return any(
+        marker in recent
+        for marker in ("提供订单号", "说明具体故障", "描述退款原因", "退款申请")
+    ) and bool(after_sale.extract_order_id(text))
+
+
+def _refund_application_skill_reply(
+    safe_text: str,
+    history: list[dict],
+    username: str | None,
+) -> str | None:
+    """退款申请 Skill：收集订单信息，确认后创建申请并生成审核工单。"""
+    active_request = _active_after_sale_request(username, "refund")
+    latest_prompt_type = after_sale.latest_confirmation_type(history)
+    confirmation_pending = (
+        active_request is not None
+        and active_request.get("status") == "pending_confirmation"
+        and latest_prompt_type == "refund"
+    )
+
+    if confirmation_pending or (
+        latest_prompt_type == "refund"
+        and not active_request
+    ):
+        if after_sale.has_conflicting_request_term(safe_text, "refund"):
+            return None
+        if active_request and active_request.get("status") == "processing":
+            return (
+                f"退款申请 {active_request.get('request_no')} 已提交，"
+                "当前正在人工审核，请不要重复提交。"
+            )
+        if active_request and active_request.get("status") == "completed":
+            return f"退款申请 {active_request.get('request_no')} 已完成，无需重复提交。"
+        if after_sale.is_rejection(safe_text):
+            return "好的，已保留当前订单，没有提交退款申请。"
+        if not after_sale.is_confirmation_for(safe_text, "refund"):
+            return "请确认是否提交退款申请。您可以回复“确认提交退款”或“暂不申请”。"
+        order_id = (
+            active_request.get("order_id")
+            if active_request
+            else _best_recent_order_id(history)
+        )
+        if not order_id:
+            return "我还没有识别到订单号，请重新提供订单号。"
+        if not username:
+            return "当前会话未登录，无法办理退款申请。"
+        order = db.get_order_for_user(username, order_id)
+        if not order:
+            return f"未查询到您名下的订单 {order_id}，请核对订单号后重试。"
+        if str(order.get("status") or "") == "已取消":
+            return f"订单 {order_id} 已经取消，无法重复提交退款申请。"
+        reason = (
+            (active_request or {}).get("reason")
+            or _refund_application_reason("", history)
+            or "客户申请退款"
+        )
+        request = active_request or _find_after_sale_request(
+            username, "refund", order_id, reason
+        )
+        if request is None:
+            return "当前没有可确认的退款申请，请重新提供订单号和退款原因。"
+        if request.get("status") == "processing":
+            return (
+                f"退款申请 {request.get('request_no')} 已提交，"
+                "当前正在人工审核，请不要重复提交。"
+            )
+        if request.get("status") == "completed":
+            return f"退款申请 {request.get('request_no')} 已完成，无需重复提交。"
+
+        request_no = request.get("request_no")
+        attempt = _start_after_sale_attempt(username, request)
+        _update_after_sale(username, request_no, "processing", "已确认退款申请，等待人工审核")
+        try:
+            ticket_id = db.insert_ticket(
+                ticket_text=(
+                    f"[退款申请 {request_no}] 订单 {order_id}（{order.get('product') or '未命名商品'}）"
+                    f"原因：{reason}"
+                ),
+                category="退款申请",
+                status="escalated",
+                username=username,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("创建退款审核工单失败 request_no=%s：%s", request_no, exc)
+            _update_after_sale(username, request_no, "failed", "退款审核工单创建失败，请重试")
+            _finish_after_sale_attempt(
+                username,
+                request,
+                attempt,
+                "failed",
+                error_code="ticket_create_failed",
+                error_message="退款审核工单创建失败，请重试",
+            )
+            return "退款申请暂时没有提交成功，您的信息已保留，请稍后重试。"
+        result = (
+            f"退款申请 {request_no} 已提交，人工审核工单 #{ticket_id} 已创建。"
+            "客服会核对订单和退款原因后跟进，请留意后续处理进度。"
+        )
+        _update_after_sale(username, request_no, "processing", result)
+        _finish_after_sale_attempt(
+            username,
+            request,
+            attempt,
+            "succeeded",
+            result=result,
+            operator="小鹏",
+        )
+        return result
+
+    if not _refund_application_context(safe_text, history):
+        return None
+    if not username:
+        return "当前会话未登录，无法办理退款申请。"
+    order_id = after_sale.extract_order_id(safe_text)
+    order = db.get_order_for_user(username, order_id)
+    if not order:
+        return f"未查询到您名下的订单 {order_id}，请核对订单号后重试。"
+    status = str(order.get("status") or "")
+    if status == "已取消":
+        return f"订单 {order_id} 已经取消，无法提交退款申请。"
+    reason = _refund_application_reason(safe_text, history) or "客户申请退款"
+    request = _persist_after_sale_draft(
+        username,
+        "refund",
+        order_id,
+        "pending_confirmation",
+        reason=reason,
+        detail=f"商品：{order.get('product') or '未命名商品'}；订单状态：{status or '未知'}",
+    )
+    request_no = request.get("request_no") if request else None
+    suffix = f"申请号：{request_no}。" if request_no else ""
+    return (
+        f"我已核对订单 {order_id}（{order.get('product') or '该商品'}），"
+        f"当前状态为“{status or '未知'}”，退款原因是“{reason}”。"
+        f"退款申请提交后会进入人工审核，确认提交退款申请吗？{suffix}"
+    )
+
+
+def _repair_application_context(text: str, history: list[dict]) -> bool:
+    """判断消息是否处于维修申请的订单号/故障补充阶段。"""
+    recent = " ".join(
+        str(item.get("content") or "") for item in (history or [])[-8:]
+    )
+    if any(term in recent for term in ("我要退款", "退款原因", "商品有质量问题", "其他退款问题")) \
+            and not any(term in recent for term in ("申请维修", "维修申请", "售后维修")):
+        return False
+    if not any(term in recent for term in repair_skill.REPAIR_TERMS):
+        return False
+    return any(
+        marker in recent
+        for marker in ("提供订单号", "故障描述", "具体故障", "核对订单")
+    ) and bool(after_sale.extract_order_id(text) or repair_skill.extract_issue(text))
+
+
+def _repair_application_skill_reply(
+    safe_text: str,
+    history: list[dict],
+    username: str | None,
+) -> str | None:
+    """维修申请 Skill：收集故障与订单信息，确认后创建人工维修工单。"""
+    active_request = _active_after_sale_request(username, "repair")
+    latest_prompt_type = after_sale.latest_confirmation_type(history)
+    confirmation_pending = (
+        active_request is not None
+        and active_request.get("status") == "pending_confirmation"
+        and latest_prompt_type == "repair"
+    )
+
+    if (
+        active_request
+        and active_request.get("status") == "processing"
+        and latest_prompt_type == "repair"
+        and after_sale.is_confirmation_for(safe_text, "repair")
+    ):
+        return (
+            f"维修申请 {active_request.get('request_no')} 已提交，"
+            "当前正在人工处理中，请不要重复提交。"
+        )
+    if (
+        active_request
+        and active_request.get("status") == "completed"
+        and latest_prompt_type == "repair"
+        and after_sale.is_confirmation_for(safe_text, "repair")
+    ):
+        return f"维修申请 {active_request.get('request_no')} 已完成，无需重复提交。"
+
+    if confirmation_pending or (
+        latest_prompt_type == "repair"
+        and not active_request
+    ):
+        if after_sale.has_conflicting_request_term(safe_text, "repair"):
+            return None
+        if active_request and active_request.get("status") == "processing":
+            return (
+                f"维修申请 {active_request.get('request_no')} 已提交，"
+                "当前正在人工处理中，请不要重复提交。"
+            )
+        if active_request and active_request.get("status") == "completed":
+            return f"维修申请 {active_request.get('request_no')} 已完成，无需重复提交。"
+        if after_sale.is_rejection(safe_text):
+            return "好的，已保留当前订单，没有提交维修申请。"
+        if not after_sale.is_confirmation_for(safe_text, "repair"):
+            return "请确认是否提交维修申请。您可以回复“确认提交维修”或“暂不申请”。"
+        order_id = (
+            active_request.get("order_id")
+            if active_request
+            else _best_recent_order_id(history)
+        )
+        if not order_id:
+            return "我还没有识别到订单号，请重新提供订单号。"
+        if not username:
+            return "当前会话未登录，无法办理维修申请。"
+        order = db.get_order_for_user(username, order_id)
+        if not order:
+            return f"未查询到您名下的订单 {order_id}，请核对订单号后重试。"
+        reason = (
+            (active_request or {}).get("reason")
+            or repair_skill.extract_issue(" ".join(
+                str(item.get("content") or "") for item in (history or [])[-10:]
+            ))
+            or "客户申请售后维修"
+        )
+        request = active_request or _find_after_sale_request(
+            username, "repair", order_id, reason
+        )
+        if request is None:
+            return "当前没有可确认的维修申请，请重新提供订单号和故障描述。"
+        if request.get("status") == "processing":
+            return (
+                f"维修申请 {request.get('request_no')} 已提交，"
+                "当前正在人工处理中，请不要重复提交。"
+            )
+        if request.get("status") == "completed":
+            return f"维修申请 {request.get('request_no')} 已完成，无需重复提交。"
+
+        request_no = request.get("request_no")
+        attempt = _start_after_sale_attempt(username, request)
+        _update_after_sale(username, request_no, "processing", "已确认维修申请，等待人工处理")
+        try:
+            ticket_id = db.insert_ticket(
+                ticket_text=(
+                    f"[售后维修申请 {request_no}] 订单 {order_id}（{order.get('product') or '未命名商品'}）"
+                    f"故障：{reason}"
+                ),
+                category="售后维修",
+                status="escalated",
+                username=username,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("创建维修工单失败 request_no=%s：%s", request_no, exc)
+            _update_after_sale(username, request_no, "failed", "维修工单创建失败，请重试")
+            _finish_after_sale_attempt(
+                username,
+                request,
+                attempt,
+                "failed",
+                error_code="ticket_create_failed",
+                error_message="维修工单创建失败，请重试",
+            )
+            return "维修申请暂时没有提交成功，您的信息已保留，请稍后重试。"
+        result = (
+            f"维修申请 {request_no} 已提交，人工维修工单 #{ticket_id} 已创建。"
+            "客服会跟进处理，请保留故障照片、视频和商品包装。"
+        )
+        _update_after_sale(username, request_no, "processing", result)
+        _finish_after_sale_attempt(
+            username,
+            request,
+            attempt,
+            "succeeded",
+            result=result,
+            operator="小鹏",
+        )
+        return result
+
+    recent = " ".join(
+        str(item.get("content") or "") for item in (history or [])[-8:]
+    )
+    refund_context = (
+        any(term in recent for term in ("我要退款", "退款原因", "商品有质量问题", "其他退款问题"))
+        and not any(term in recent for term in ("申请维修", "维修申请", "售后维修"))
+    )
+    active = (
+        not refund_context
+        and (
+            repair_skill.is_repair_request(safe_text)
+            or repair_skill.is_repair_followup(safe_text, history)
+            or _repair_application_context(safe_text, history)
+        )
+    )
+    if not active:
+        return None
+    if not username:
+        return "当前会话未登录，无法办理维修申请。"
+    order_id = repair_skill.extract_order_id(safe_text)
+    if not order_id:
+        return "我可以帮您办理售后维修。请提供订单号，并描述具体故障（例如无法开机、没有声音或充不进电）。"
+    order = db.get_order_for_user(username, order_id)
+    if not order:
+        return f"未查询到您名下的订单 {order_id}，请核对订单号后重试。"
+    status = str(order.get("status") or "")
+    if status == "已取消":
+        return f"订单 {order_id} 已经取消，无法提交维修申请。"
+    reason = repair_skill.extract_issue(safe_text)
+    if not reason:
+        return "已找到订单，请再描述一下具体故障，例如无法开机、没有声音或充不进电。"
+    request = _persist_after_sale_draft(
+        username,
+        "repair",
+        order_id,
+        "pending_confirmation",
+        reason=reason,
+        detail=f"商品：{order.get('product') or '未命名商品'}；订单状态：{status or '未知'}",
+    )
+    request_no = request.get("request_no") if request else None
+    suffix = f"申请号：{request_no}。" if request_no else ""
+    return (
+        f"我已核对订单 {order_id}（{order.get('product') or '该商品'}），"
+        f"故障描述为“{reason}”。提交后会进入人工处理，确认提交维修申请吗？{suffix}"
+    )
+
+
+def _best_recent_order_id(history: list[dict]) -> str | None:
+    """从最近对话中恢复订单号，支持客户只回复「确认」。"""
+    for item in reversed((history or [])[-8:]):
+        order_id = after_sale.extract_order_id(str(item.get("content") or ""))
+        if order_id:
+            return order_id
+    return None
+
+
+def _find_after_sale_request(
+    username: str | None,
+    request_type: str,
+    order_id: str,
+    reason: str | None = None,
+) -> dict | None:
+    if not username:
+        return None
+    key = after_sale.idempotency_key(username, request_type, order_id, reason)
+    try:
+        return db.find_after_sale_by_idempotency(username, key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取售后申请失败：%s", exc)
+        return None
+
+
+def _active_after_sale_request(username: str | None, request_type: str) -> dict | None:
+    """读取数据库中的当前待处理申请，避免不同售后流程串线。"""
+    if not username:
+        return None
+    try:
+        return db.get_active_after_sale(username, request_type)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取当前售后申请失败 type=%s：%s", request_type, exc)
+        return None
+
+
+def _persist_after_sale_draft(
+    username: str | None,
+    request_type: str,
+    order_id: str,
+    status: str,
+    reason: str | None = None,
+    detail: str | None = None,
+) -> dict | None:
+    """保存售后草稿；数据库暂时不可用时不阻断当前聊天。"""
+    if not username:
+        return None
+    key = after_sale.idempotency_key(username, request_type, order_id, reason)
+    try:
+        return db.create_after_sale_request(
+            username=username,
+            order_id=order_id,
+            request_type=request_type,
+            status=status,
+            idempotency_key=key,
+            reason=reason,
+            detail=detail,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("售后草稿持久化失败，继续当前会话：%s", exc)
+        return None
+
+
+def _update_after_sale(
+    username: str | None,
+    request_no: str | None,
+    status: str,
+    result: str,
+) -> None:
+    if not username or not request_no:
+        return
+    try:
+        db.update_after_sale_request(request_no, username, status, result)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("售后状态更新失败 request_no=%s：%s", request_no, exc)
+
+
+def _start_after_sale_attempt(
+    username: str | None,
+    request: dict | None,
+    operator: str = "小鹏",
+    ticket_id: int | None = None,
+) -> dict | None:
+    """为客户侧真实提交创建尝试记录；记录失败不阻断当前业务回复。"""
+    if not username or not request or not request.get("request_no"):
+        return None
+    try:
+        return db.start_after_sale_attempt(
+            request_no=request["request_no"],
+            username=username,
+            operator=operator,
+            ticket_id=ticket_id or request.get("ticket_id"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "售后尝试开始记录失败 request_no=%s：%s",
+            request.get("request_no"),
+            exc,
+        )
+        return None
+
+
+def _finish_after_sale_attempt(
+    username: str | None,
+    request: dict | None,
+    attempt: dict | None,
+    status: str,
+    result: str | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    operator: str = "小鹏",
+) -> None:
+    """补齐售后尝试结果；历史失败原因独立保存，不依赖申请当前结果。"""
+    if not username or not request or not attempt:
+        return
+    try:
+        db.finish_after_sale_attempt(
+            request_no=request["request_no"],
+            username=username,
+            attempt_no=attempt["attempt_no"],
+            status=status,
+            operator=operator,
+            result=result,
+            error_code=error_code,
+            error_message=error_message,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "售后尝试结果记录失败 request_no=%s attempt=%s：%s",
+            request.get("request_no"),
+            attempt.get("attempt_no"),
+            exc,
+        )
+
+
 def _cancel_skill_reply(safe_text: str, history: list[dict], username: str | None) -> str | None:
-    """执行取消订单多轮 Skill，按订单状态选择取消或物流拦截指引。"""
+    """取消订单多轮 Skill：先确认，再执行一次可幂等的取消动作。"""
+    active_request = _active_after_sale_request(username, "cancel")
+    latest_prompt_type = after_sale.latest_confirmation_type(history)
+    confirmation_pending = (
+        active_request is not None
+        and active_request.get("status") == "pending_confirmation"
+        and latest_prompt_type == "cancel"
+    )
+    if (
+        active_request
+        and active_request.get("status") == "completed"
+        and latest_prompt_type == "cancel"
+        and after_sale.is_confirmation_for(safe_text, "cancel")
+    ):
+        return f"订单 {active_request.get('order_id')} 已经取消，无需重复操作。"
+    if (
+        active_request
+        and active_request.get("status") == "processing"
+        and latest_prompt_type == "cancel"
+        and after_sale.is_confirmation_for(safe_text, "cancel")
+    ):
+        return (
+            f"取消申请 {active_request.get('request_no')} 已提交，"
+            "系统正在处理，请不要重复提交。"
+        )
+    if confirmation_pending or (
+        latest_prompt_type == "cancel"
+        and not active_request
+    ):
+        if after_sale.has_conflicting_request_term(safe_text, "cancel"):
+            return None
+        if active_request and active_request.get("status") == "processing":
+            return (
+                f"取消申请 {active_request.get('request_no')} 已提交，"
+                "系统正在处理，请不要重复提交。"
+            )
+        order_id = (
+            active_request.get("order_id")
+            if confirmation_pending
+            else _best_recent_order_id(history)
+        )
+        if after_sale.is_rejection(safe_text):
+            return "好的，已保留这笔订单，没有执行取消操作。"
+        if not after_sale.is_confirmation(safe_text):
+            return "请确认是否取消这笔订单。您可以回复“确认取消”或“暂不取消”。"
+        if not order_id:
+            return "我还没有识别到订单号，请重新提供订单号。"
+        if not username:
+            return "当前会话未登录，无法办理取消订单。"
+        order = db.get_order_for_user(username, order_id)
+        if not order:
+            return f"未查询到您名下的订单 {order_id}，请核对订单号后重试。"
+        if str(order.get("status") or "") != "待发货":
+            return f"订单 {order_id} 当前已不是待发货状态，暂时不能在线取消。"
+        request = active_request or _find_after_sale_request(username, "cancel", order_id)
+        if request is None:
+            return "当前没有可确认的取消申请，请重新提供订单号，我先帮您核对状态。"
+        if request and request.get("status") == "completed":
+            return f"订单 {order_id} 已经取消，无需重复操作。"
+        attempt = _start_after_sale_attempt(username, request)
+        _update_after_sale(username, request.get("request_no"), "processing", "已确认取消，正在执行订单状态更新")
+        result = agent._cancel_order(order_id, username)
+        final_status = "completed" if "已成功取消" in result else "failed"
+        _update_after_sale(
+            username,
+            request.get("request_no"),
+            final_status,
+            result,
+        )
+        _finish_after_sale_attempt(
+            username,
+            request,
+            attempt,
+            "succeeded" if final_status == "completed" else "failed",
+            result=result if final_status == "completed" else None,
+            error_code=None if final_status == "completed" else "cancel_failed",
+            error_message=None if final_status == "completed" else result,
+        )
+        return result
+
     if not (cancel_skill.is_cancel_order_followup(safe_text, history)
             or cancel_skill.is_direct_cancel_request(safe_text)):
         return None
@@ -305,7 +946,19 @@ def _cancel_skill_reply(safe_text: str, history: list[dict], username: str | Non
         return f"未查询到您名下的订单 {order_id}，请核对订单号后重试。"
     status = str(order.get("status") or "")
     if status == "待发货":
-        return agent._cancel_order(order_id, username)
+        request = _persist_after_sale_draft(
+            username,
+            "cancel",
+            order_id,
+            "pending_confirmation",
+            detail=f"商品：{order.get('product') or '未命名商品'}",
+        )
+        request_no = request.get("request_no") if request else None
+        suffix = f"申请号：{request_no}。" if request_no else ""
+        return (
+            f"订单 {order_id}（{order.get('product') or '该商品'}）尚未发货，可以直接取消。"
+            f"取消后订单将无法恢复，确认要取消吗？{suffix}"
+        )
     if status in {"已发货", "运输中", "派送中"}:
         tracking = order.get("tracking_no")
         tracking_hint = f"运单号是 {tracking}，" if tracking else ""
@@ -321,7 +974,83 @@ def _cancel_skill_reply(safe_text: str, history: list[dict], username: str | Non
 
 
 def _return_skill_reply(safe_text: str, history: list[dict], username: str | None) -> str | None:
-    """执行退货办理 Skill，强退诉求不再落入 FAQ 或泛化分类。"""
+    """退货办理 Skill：签收后先确认申请，再进入人工审核。"""
+    active_request = _active_after_sale_request(username, "return")
+    latest_prompt_type = after_sale.latest_confirmation_type(history)
+    confirmation_pending = (
+        active_request is not None
+        and active_request.get("status") == "pending_confirmation"
+        and latest_prompt_type == "return"
+    )
+    if (
+        active_request
+        and active_request.get("status") == "processing"
+        and latest_prompt_type == "return"
+        and after_sale.is_confirmation_for(safe_text, "return")
+    ):
+        return (
+            f"退货申请 {active_request.get('request_no')} 已提交，"
+            "当前正在人工审核，请不要重复提交。"
+        )
+    if confirmation_pending or (
+        latest_prompt_type == "return"
+        and not active_request
+    ):
+        if after_sale.has_conflicting_request_term(safe_text, "return"):
+            return None
+        if active_request and active_request.get("status") == "processing":
+            return (
+                f"退货申请 {active_request.get('request_no')} 已提交，"
+                "当前正在人工审核，请不要重复提交。"
+            )
+        order_id = (
+            active_request.get("order_id")
+            if confirmation_pending
+            else _best_recent_order_id(history)
+        )
+        if after_sale.is_rejection(safe_text):
+            return "好的，已保留当前订单，没有提交退货申请。"
+        if not after_sale.is_confirmation_for(safe_text, "return"):
+            return "请确认是否提交退货申请。您可以回复“确认提交退货”或“暂不申请”。"
+        if not order_id:
+            return "我还没有识别到订单号，请重新提供订单号。"
+        if not username:
+            return "当前会话未登录，无法办理退货申请。"
+        order = db.get_order_for_user(username, order_id)
+        if not order:
+            return f"未查询到您名下的订单 {order_id}，请核对订单号后重试。"
+        if str(order.get("status") or "") not in {"已签收", "已完成", "已退货"}:
+            return f"订单 {order_id} 当前状态不适合提交退货申请，请先核对物流状态。"
+        reason_text = " ".join(
+            str(item.get("content") or "") for item in (history or [])[-8:]
+        )
+        reason = return_skill.extract_reason(reason_text) or "客户申请退货"
+        request = active_request or _find_after_sale_request(username, "return", order_id, reason)
+        if request is None:
+            return "当前没有可确认的退货申请，请重新提供订单号和退货原因。"
+        if request and request.get("status") == "processing":
+            return (
+                f"退货申请 {request.get('request_no')} 已提交，当前正在人工审核，"
+                "请保留商品、包装和相关凭证。"
+            )
+        if request and request.get("status") == "completed":
+            return f"退货申请 {request.get('request_no')} 已完成，无需重复提交。"
+        attempt = _start_after_sale_attempt(username, request)
+        _update_after_sale(username, request.get("request_no"), "processing", "已确认提交退货，等待人工审核")
+        _finish_after_sale_attempt(
+            username,
+            request,
+            attempt,
+            "succeeded",
+            result="已确认提交退货，等待人工审核",
+        )
+        request_no = request.get("request_no")
+        suffix = f"，申请号：{request_no}" if request_no else ""
+        return (
+            f"已提交退货申请{suffix}。客服会核对订单和商品状态后跟进，"
+            "当前已进入人工审核，请保留商品、包装和相关凭证。"
+        )
+
     active = return_skill.is_return_request(safe_text) or return_skill.is_return_followup(safe_text, history)
     if not active:
         return None
@@ -346,9 +1075,19 @@ def _return_skill_reply(safe_text: str, history: list[dict], username: str | Non
         )
     if status in {"已签收", "已完成", "已退货"}:
         issue = reason or "客户申请退货"
+        request = _persist_after_sale_draft(
+            username,
+            "return",
+            order_id,
+            "pending_confirmation",
+            reason=issue,
+            detail=f"商品：{order.get('product') or '未命名商品'}",
+        )
+        request_no = request.get("request_no") if request else None
+        suffix = f"申请号：{request_no}。" if request_no else ""
         return (
-            f"已为您登记退货申请（订单 {order_id}，原因：{issue}）。"
-            "客服会核对订单和商品状态后跟进，请保留商品和相关凭证。"
+            f"订单 {order_id} 已签收，可以申请退货，当前原因是“{issue}”。"
+            f"提交后会进入人工审核，确认提交退货申请吗？{suffix}"
         )
     return f"订单 {order_id} 当前状态为“{status or '未知'}”，我先为您核对退货条件。"
 
@@ -434,12 +1173,62 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
     return_skill_reply = _return_skill_reply(safe_text, history, username)
     if return_skill_reply is not None:
         trace.append("return_skill")
+        submitted_return = (
+            "已提交退货申请" in return_skill_reply
+            or "正在人工审核" in return_skill_reply
+        )
         record = mk(
             category="退货申请", confidence=1.0,
-            reason="退货 Skill 根据订单状态办理退货或给出拦截/取消方案",
-            status="escalated" if "登记退货申请" in return_skill_reply else "auto",
+            reason="退货 Skill 根据订单状态收集确认、提交申请或给出拦截/取消方案",
+            status="escalated" if submitted_return else "auto",
             reply=_with_empathy(return_skill_reply, service_feedback),
-            reply_source="escalate" if "登记退货申请" in return_skill_reply else "agent",
+            reply_source="escalate" if submitted_return else "agent",
+        )
+        _remember_and_schedule(username, safe_text, record["reply"])
+        return record
+
+    repair_application_reply = _repair_application_skill_reply(
+        safe_text, history, username
+    )
+    if repair_application_reply is not None:
+        trace.append("repair_application_skill")
+        submitted_repair = (
+            "维修申请" in repair_application_reply
+            and (
+                "已提交" in repair_application_reply
+                or "人工维修工单" in repair_application_reply
+            )
+        )
+        record = mk(
+            category="售后维修",
+            confidence=1.0,
+            reason="维修申请 Skill 收集故障、核对订单并在确认后创建人工工单",
+            status="escalated" if submitted_repair else "auto",
+            reply=_with_empathy(repair_application_reply, service_feedback),
+            reply_source="escalate" if submitted_repair else "agent",
+        )
+        _remember_and_schedule(username, safe_text, record["reply"])
+        return record
+
+    refund_application_reply = _refund_application_skill_reply(
+        safe_text, history, username
+    )
+    if refund_application_reply is not None:
+        trace.append("refund_application_skill")
+        submitted_refund = (
+            "退款申请" in refund_application_reply
+            and (
+                "已提交" in refund_application_reply
+                or "人工审核工单" in refund_application_reply
+            )
+        )
+        record = mk(
+            category="退款申请",
+            confidence=1.0,
+            reason="退款申请 Skill 收集原因、核对订单并在确认后创建审核工单",
+            status="escalated" if submitted_refund else "auto",
+            reply=_with_empathy(refund_application_reply, service_feedback),
+            reply_source="escalate" if submitted_refund else "agent",
         )
         _remember_and_schedule(username, safe_text, record["reply"])
         return record
@@ -594,7 +1383,7 @@ def process_ticket(ticket_text: str, ground_truth: str | None = None,
             category="知识库命中", confidence=1.0,
             reason=f"RAG 知识库命中（距离 {rag_hit['distance']:.3f}），直接返回，未调用大模型",
             status="auto", reply=_with_empathy(rag_hit["answer"], service_feedback), reply_source="rag",
-            rag_chunks=json.dumps([rag_hit], ensure_ascii=False),
+            rag_chunks=json.dumps([rag_hit], ensure_ascii=False, default=str),
         )
         ticket_logger.info("RAG 命中（距离 %.3f）：%s", rag_hit["distance"], safe_text)
         _remember_and_schedule(username, safe_text, rag_hit["answer"])

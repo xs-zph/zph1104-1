@@ -1,8 +1,23 @@
 {"id":"return_window","question":"我收到货后几天内可以退货？","expected_questions":["退货需要满足什么条件？"]}
+{"id":"return_window_colloquial","question":"签收后几天能退呀？","expected_questions":["退货需要满足什么条件？"]}
+{"id":"return_condition_typo","question":"退货有啥条见啊","expected_questions":["退货需要满足什么条件？"]}
+{"id":"return_shipping_fee","question":"退货的邮费谁来出？","expected_questions":["退货运费由谁承担？"]}
 {"id":"warranty","question":"坏了能保修多久？","expected_questions":["产品保修期是多长时间？"]}
+{"id":"warranty_colloquial","question":"耳机坏了还能保不？","expected_questions":["产品保修期是多长时间？","收到商品有问题怎么办？"]}
 {"id":"refund_time","question":"退款一般什么时候到账？","expected_questions":["退款多久能到账？"]}
+{"id":"refund_time_colloquial","question":"退的钱啥时候能回来呀？","expected_questions":["退款多久能到账？"]}
 {"id":"shipping","question":"下单以后多久发货？","expected_questions":["多久发货？"]}
-{"id":"invoice","question":"电子发票怎么开？","expected_questions":["商品可以开发票吗？"]}
-{"id":"after_sale","question":"商品有故障要怎么申请维修？","expected_questions":["申请售后维修的流程是什么？"]}
+{"id":"shipping_colloquial","question":"下单后啥时候能发货呀？","expected_questions":["多久发货？"]}
+{"id":"invoice","question":"电子发票怎么开？","expected_questions":["商品可以开发票吗？","电子发票在哪里下载？"]}
+{"id":"invoice_download_colloquial","question":"发票在哪儿下载啊？","expected_questions":["电子发票在哪里下载？"]}
+{"id":"after_sale","question":"商品有故障要怎么申请维修？","expected_questions":["申请售后维修的流程是什么？","收到商品有问题怎么办？"]}
+{"id":"after_sale_typo","question":"耳机坏了咋报修？","expected_questions":["申请售后维修的流程是什么？","收到商品有问题怎么办？"]}
 {"id":"logistics_live_data_guard","question":"我的包裹现在到哪儿了？","expected_questions":[],"expect_faq":false}
+{"id":"logistics_stale_guard","question":"我的物流三天没更新了","expected_questions":[],"expect_faq":false,"guard_reason":"personal_logistics_status"}
+{"id":"refund_live_data_guard","question":"我的退款什么时候到账？","expected_questions":[],"expect_faq":false,"guard_reason":"personal_refund_status"}
+{"id":"ticket_live_data_guard","question":"我的工单处理到哪一步了？","expected_questions":[],"expect_faq":false,"guard_reason":"personal_ticket_status"}
+{"id":"order_live_data_guard","question":"订单号 A20240812001 现在是什么状态？","expected_questions":[],"expect_faq":false,"guard_reason":"personal_order_status"}
+{"id":"chitchat_guard","question":"你是谁？","expected_questions":[],"expect_faq":false,"guard_reason":"assistant_meta"}
+{"id":"out_of_scope_guard","question":"帮我查一下明天的天气","expected_questions":[],"expect_faq":false,"guard_reason":"out_of_scope"}
 {"id":"address","question":"还没发货可以改收货地址吗？","expected_questions":["可以修改收货地址吗？"]}
+{"id":"address_typo","question":"地址填错了还能改么？","expected_questions":["可以修改收货地址吗？"]}

@@ -119,6 +119,37 @@ class TicketAssignRequest(BaseModel):
     assigned_to: str
 
 
+class AfterSaleAnnotationRequest(BaseModel):
+    """人工客服记录工单上的结构化售后标注，不直接提交售后申请。"""
+
+    request_type: str
+    stage: str
+    order_id: Optional[str] = Field(default=None, max_length=64)
+    product: Optional[str] = Field(default=None, max_length=255)
+    reason: Optional[str] = Field(default=None, max_length=255)
+    item_status: Optional[str] = Field(default=None, max_length=64)
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ReturnRequestSubmit(BaseModel):
+    """客服确认提交真实退货申请。"""
+
+    confirmed: bool = False
+
+
+class AfterSaleRequestSubmit(BaseModel):
+    """客服确认提交真实退款或维修申请。"""
+
+    confirmed: bool = False
+
+
+class AfterSaleRetryRequest(BaseModel):
+    """客服确认重试一条已失败的售后申请。"""
+
+    request_no: str = Field(min_length=1, max_length=40)
+    confirmed: bool = False
+
+
 class FeedbackRequest(BaseModel):
     """用户对某条 AI 回复的满意度评价。"""
 

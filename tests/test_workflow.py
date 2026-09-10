@@ -164,6 +164,53 @@ class HumanHandoffApiTests(unittest.TestCase):
         self.assertEqual(result["reply_source"], "human_queue")
         self.assertIn("人工", result["reply"])
 
+    def test_new_ai_request_during_human_handoff_restarts_ai_flow(self):
+        active_ticket = {
+            "id": 42,
+            "username": "alice",
+            "status": "in_progress",
+            "assigned_to": "admin",
+            "human_answer": None,
+        }
+        ai_record = {
+            "ticket_text": "我想要退款",
+            "username": "alice",
+            "category": "退款咨询",
+            "status": "auto",
+            "reply": "请先告诉我退款原因",
+            "reply_source": "clarification",
+        }
+        with patch.object(main.db, "get_active_human_ticket_for_user", return_value=active_ticket), \
+             patch.object(main.router, "is_standalone_ai_request", return_value=True), \
+             patch.object(main, "_end_human_session") as end_session, \
+             patch.object(main.router, "process_ticket", return_value=ai_record) as process_ticket, \
+             patch.object(main, "_save_ticket_record", return_value=ai_record) as save_record, \
+             patch.object(main.db, "append_customer_message") as append_message:
+            result = main.create_ticket(
+                main.TicketCreate(ticket_text="我想要退款"),
+                "alice",
+            )
+
+        end_session.assert_called_once_with(
+            "alice",
+            reason="客户发起新的 AI 自助请求，结束当前人工会话",
+        )
+        process_ticket.assert_called_once_with(
+            "我想要退款",
+            username="alice",
+            phone=None,
+            device="web",
+        )
+        save_record.assert_called_once_with(ai_record, "alice")
+        append_message.assert_not_called()
+        self.assertEqual(result["category"], "退款咨询")
+
+    def test_standalone_ai_request_classifier_keeps_human_supplement_messages(self):
+        self.assertTrue(main.router.is_standalone_ai_request("我想要退款"))
+        self.assertTrue(main.router.is_standalone_ai_request("我的快递到哪了？"))
+        self.assertFalse(main.router.is_standalone_ai_request("补充一下，订单号是 A100"))
+        self.assertFalse(main.router.is_standalone_ai_request("我补充故障照片"))
+
     def test_customer_followup_wakes_waiting_ticket_and_notifies_agent(self):
         active_ticket = {
             "id": 43,

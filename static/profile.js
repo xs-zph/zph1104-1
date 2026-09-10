@@ -8,6 +8,7 @@ const labels = {
 const subjectFacts = document.getElementById("subject-facts");
 const orderList = document.getElementById("order-list");
 const ticketList = document.getElementById("ticket-list");
+const afterSaleList = document.getElementById("after-sale-list");
 function headers() { return { "Content-Type": "application/json" }; }
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -55,15 +56,40 @@ function renderTickets(tickets) {
   if (!tickets.length) { ticketList.innerHTML = '<div class="archive-empty">暂无售后工单。</div>'; return; }
   ticketList.innerHTML = tickets.map((ticket) => `<article class="object-card ticket-card"><div class="object-card-head"><strong>${escapeHtml(ticket.topic || "售后进度")}</strong><span class="state">${escapeHtml(ticket.status_label || "处理中")}</span></div><p>${escapeHtml(ticket.summary || "暂无描述")}</p>${ticket.created_at ? `<small>提交时间：${escapeHtml(String(ticket.created_at).slice(0, 16))}</small>` : ""}</article>`).join("");
 }
+function renderAfterSales(requests) {
+  document.getElementById("after-sale-count").textContent = requests.length;
+  if (!requests.length) {
+    afterSaleList.innerHTML = '<div class="archive-empty">暂无售后申请。</div>';
+    return;
+  }
+  afterSaleList.innerHTML = requests.map((request) => `<article class="object-card ticket-card">
+    <div class="object-card-head">
+      <strong>${escapeHtml(request.request_type_label || "售后申请")}</strong>
+      <span class="state">${escapeHtml(request.status_label || "处理中")}</span>
+    </div>
+    <div class="object-id">申请号：${escapeHtml(request.request_no || "—")}</div>
+    <p>订单：${escapeHtml(request.order_id || "—")}${request.reason ? ` · 原因：${escapeHtml(request.reason)}` : ""}</p>
+    ${request.result ? `<small>${escapeHtml(request.result)}</small>` : ""}
+    ${request.created_at ? `<small>提交时间：${escapeHtml(String(request.created_at).slice(0, 16))}</small>` : ""}
+  </article>`).join("");
+}
 async function loadArchive() {
   try {
-    const response = await fetch("/api/entity-archive", { headers: headers() });
+    const [response, afterSaleResponse] = await Promise.all([
+      fetch("/api/entity-archive", { headers: headers() }),
+      fetch("/api/after-sales", { headers: headers() }),
+    ]);
     if (response.status === 401) { window.location.href = "/login"; return; }
+    if (afterSaleResponse.status === 401) { window.location.href = "/login"; return; }
     if (!response.ok) throw new Error("archive request failed");
+    if (!afterSaleResponse.ok) throw new Error("after-sales request failed");
     const data = await response.json();
-    renderFacts(data.subject?.facts || []); renderOrders(data.objects?.orders || []); renderTickets(data.objects?.tickets || []);
+    const afterSales = await afterSaleResponse.json();
+    renderFacts(data.subject?.facts || []); renderOrders(data.objects?.orders || []);
+    renderTickets(data.objects?.tickets || []); renderAfterSales(afterSales || []);
   } catch (error) {
-    subjectFacts.innerHTML = '<div class="archive-empty">档案暂时无法加载，请稍后刷新。</div>'; orderList.innerHTML = ""; ticketList.innerHTML = "";
+    subjectFacts.innerHTML = '<div class="archive-empty">档案暂时无法加载，请稍后刷新。</div>';
+    orderList.innerHTML = ""; ticketList.innerHTML = ""; afterSaleList.innerHTML = "";
   }
 }
 async function logout() { await fetch("/api/logout", { method: "POST", headers: headers() }).catch(() => {}); window.location.href = "/login"; }

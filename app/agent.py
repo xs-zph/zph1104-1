@@ -18,6 +18,9 @@ from prompts import agent as agent_prompt
 
 logger = logging.getLogger("app.agent")
 
+# 高风险写操作不交给模型自由选择，必须由路由层的确认流程调用。
+MODEL_BLOCKED_WRITE_TOOLS = frozenset({"cancel_order", "apply_after_sale"})
+
 # 提供给 DeepSeek 的工具定义（OpenAI function calling 格式）
 TOOLS = [
     {
@@ -334,22 +337,58 @@ def _check_my_tickets(username: str | None) -> str:
     return "\n".join(lines)
 
 
-def _apply_after_sale(order_id: str, issue: str, username: str | None) -> str:
-    """工具：登记售后维修工单（记录订单号 + 故障问题），供人工客服跟进。"""
+def _check_my_after_sales(username: str | None) -> str:
+    """工具：查询当前用户提交的统一售后申请进度。"""
     if not username:
-        return "当前会话未登录，无法登记售后申请"
-    order = db.get_order_for_user(username, order_id.strip())
-    if not order:
-        return f"未查询到您（{username}）名下的订单 {order_id}，请核对订单号"
-    ticket_id = db.insert_ticket(
-        ticket_text=f"[售后维修申请] 订单 {order_id}（{order['product']}）问题：{issue}",
-        category="售后维修",
-        status="escalated",
-        username=username,
-    )
+        return "当前会话未登录，无法查询售后申请"
+    try:
+        requests = db.list_after_sale_requests(username, limit=5)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取售后申请失败：%s", exc)
+        return "售后申请进度暂时无法查询，请稍后重试。"
+    if not requests:
+        return "您目前没有统一售后申请记录。"
+    labels = {
+        "cancel": "取消订单",
+        "return": "退货申请",
+        "refund": "退款申请",
+        "repair": "售后维修",
+    }
+    status_labels = {
+        "draft": "信息收集中",
+        "pending_confirmation": "等待确认",
+        "processing": "处理中",
+        "completed": "已完成",
+        "rejected": "已拒绝",
+        "cancelled": "已取消",
+        "failed": "处理失败，可重试",
+    }
+    lines = ["您的售后申请进度："]
+    for request in requests:
+        request_type = labels.get(request.get("request_type"), "售后申请")
+        status = status_labels.get(request.get("status"), "处理中")
+        line = (
+            f"{request_type}（申请号 {request.get('request_no')}，"
+            f"订单 {request.get('order_id')}）：{status}"
+        )
+        if request.get("reason"):
+            line += f"，原因：{request['reason']}"
+        if request.get("result"):
+            line += f"。{request['result']}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _apply_after_sale(order_id: str, issue: str, username: str | None) -> str:
+    """兼容旧调用方，但禁止绕过统一维修申请流程写入工单。
+
+    维修申请现在必须由 router 的确认流程创建统一售后申请和人工工单。
+    该函数保留旧名字，避免历史调用方导入失败，但不再执行任何数据库写操作。
+    """
+    del order_id, issue, username
     return (
-        f"已登记售后维修工单 #{ticket_id}（订单 {order_id}，商品 {order['product']}，问题：{issue}）。"
-        "客服会在 24 小时内响应，请您保留好故障照片/视频凭证。"
+        "维修申请需要先核对订单号和故障描述，并在您确认后提交。"
+        "请通过客服对话中的“确认提交维修”完成申请。"
     )
 
 
@@ -411,6 +450,8 @@ def run_data_query(question: str, username: str | None = None) -> str:
     if not username:
         return "当前会话未登录，无法查询您的订单、物流或退款进度。"
     text = (question or "").lower()
+    if any(term in text for term in ("售后申请进度", "退货申请进度", "取消申请进度")):
+        return _check_my_after_sales(username)
     if "工单" in text or "售后进度" in text:
         return _execute_with_mcp_fallback("check_my_tickets", {}, username)
 
@@ -460,6 +501,10 @@ def run_agent(question: str, username: str | None = None, *,
     # 把身份注入工具执行闭包：模型只能决定「查哪个订单号」，
     # 但「查出来是不是这个用户的」由服务端在工具内部强制校验，模型无法越权。
     fallback_tools = skills.select_tools(question, TOOLS)
+    fallback_tools = [
+        tool for tool in fallback_tools
+        if tool.get("function", {}).get("name") not in MODEL_BLOCKED_WRITE_TOOLS
+    ]
     if tool_names is not None:
         fallback_tools = [
             tool for tool in fallback_tools

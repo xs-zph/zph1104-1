@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from app import router
 from app import responder
 
@@ -62,6 +64,44 @@ def test_pure_service_feedback_is_fast_and_does_not_call_llm(monkeypatch):
     assert result["reply_source"] == "chat"
     assert "久等" in result["reply"]
     assert "service_feedback" in result["route_trace"]
+
+
+def test_anger_feedback_is_acknowledged_without_rag_or_human_escalation(monkeypatch):
+    monkeypatch.setattr(router, "_classify_safe", lambda *args: (_ for _ in ()).throw(
+        AssertionError("纯情绪反馈不应调用分类模型")
+    ))
+    monkeypatch.setattr(router.rag, "best_answer", lambda *args: (_ for _ in ()).throw(
+        AssertionError("纯情绪反馈不应进入 RAG")
+    ))
+    monkeypatch.setattr(router.memory, "get_history", lambda username: [])
+    monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+
+    for text in ("我生气了", "我很生气", "气死我了"):
+        result = router.process_ticket(text, username="user")
+        assert result["status"] == "auto"
+        assert result["reply_source"] == "chat"
+        assert "生气" in result["reply"]
+        assert "系统开小差" not in result["reply"]
+        assert "service_feedback" in result["route_trace"]
+
+
+def test_rag_hit_with_datetime_is_serializable(monkeypatch):
+    monkeypatch.setattr(router.memory, "get_history", lambda username: [])
+    monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.rag, "best_answer", lambda text: {
+        "question": "如何退货",
+        "answer": "您可以在订单详情中申请退货。",
+        "distance": 0.12,
+        "created_at": datetime(2026, 9, 10, 15, 0, 0),
+    })
+
+    result = router.process_ticket("如何退货", username="user")
+
+    assert result["status"] == "auto"
+    assert result["reply_source"] == "rag"
+    assert "退货" in result["reply"]
+    assert "datetime" not in result["rag_chunks"]
+    assert "2026-09-10 15:00:00" in result["rag_chunks"]
 
 
 def test_service_feedback_with_business_request_keeps_business_flow(monkeypatch):
@@ -142,6 +182,111 @@ def test_refund_order_id_followup_calls_check_refund(monkeypatch):
     assert "refund_skill" in result["route_trace"]
 
 
+def test_new_refund_application_wins_over_stale_refund_progress_history(monkeypatch):
+    history = [
+        {"role": "user", "content": "我的退款进度"},
+        {"role": "assistant", "content": "您的退款进度：订单 A20240720003 正在处理中"},
+        {"role": "user", "content": "我要退款"},
+        {"role": "assistant", "content": "为了给您匹配正确流程，请先告诉我退款原因："},
+        {"role": "user", "content": "商品有质量问题"},
+        {"role": "assistant", "content": "好的，商品质量问题需要记录订单号和问题描述。请提供订单号，并说明具体故障。"},
+    ]
+    monkeypatch.setattr(router.memory, "get_history", lambda username: history)
+    monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.agent, "_execute_with_mcp_fallback", lambda *args: (
+        (_ for _ in ()).throw(AssertionError("新的退款申请不应走退款进度查询"))
+    ))
+    monkeypatch.setattr(router.db, "get_order_for_user", lambda username, order_id: {
+        "order_id": order_id,
+        "product": "运动跑鞋",
+        "status": "已完成",
+    })
+    monkeypatch.setattr(router.db, "get_active_after_sale", lambda *args: None)
+    monkeypatch.setattr(router.db, "create_after_sale_request", lambda **kwargs: {
+        "request_no": "AS-TEST-REFUND-STALE-HISTORY",
+        "status": "pending_confirmation",
+        "order_id": "A20240720003",
+        "request_type": "refund",
+        "reason": "商品有质量问题",
+    })
+
+    result = router.process_ticket(
+        "A20240720003，商品有质量问题",
+        username="user",
+    )
+
+    assert result["category"] == "退款申请"
+    assert result["reply_source"] == "agent"
+    assert "确认提交退款申请" in result["reply"]
+
+
+def test_refund_application_collects_order_and_waits_for_confirmation(monkeypatch):
+    history = [
+        {"role": "user", "content": "我要退款"},
+        {"role": "assistant", "content": "为了给您匹配正确流程，请先告诉我退款原因："},
+        {"role": "user", "content": "商品有质量问题"},
+        {"role": "assistant", "content": "请提供订单号，并说明具体故障；如方便，也可以上传照片。"},
+    ]
+    monkeypatch.setattr(router.memory, "get_history", lambda username: history)
+    monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.db, "get_order_for_user", lambda username, order_id: {
+        "order_id": order_id,
+        "product": "无线耳机",
+        "status": "已签收",
+    })
+    monkeypatch.setattr(router.db, "get_active_after_sale", lambda *args: None)
+    monkeypatch.setattr(router.db, "create_after_sale_request", lambda **kwargs: {
+        "request_no": "AS-TEST-REFUND",
+        "status": "pending_confirmation",
+        "order_id": "A20240812001",
+        "request_type": "refund",
+        "reason": "商品质量问题",
+    })
+    result = router.process_ticket("A20240812001，左耳无声", username="user")
+
+    assert result["category"] == "退款申请"
+    assert result["status"] == "auto"
+    assert result["reply_source"] == "agent"
+    assert "退款原因" in result["reply"]
+    assert "确认提交退款申请" in result["reply"]
+    assert "AS-TEST-REFUND" in result["reply"]
+
+
+def test_refund_application_submits_only_after_confirmation(monkeypatch):
+    history = [
+        {"role": "user", "content": "A20240812001，左耳无声"},
+        {"role": "assistant", "content": "订单 A20240812001 当前可以申请退款，确认提交退款申请吗？"},
+    ]
+    inserted = []
+    monkeypatch.setattr(router.memory, "get_history", lambda username: history)
+    monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.db, "get_active_after_sale", lambda *args: {
+        "request_no": "AS-TEST-REFUND",
+        "status": "pending_confirmation",
+        "order_id": "A20240812001",
+        "request_type": "refund",
+        "reason": "商品质量问题",
+    })
+    monkeypatch.setattr(router.db, "get_order_for_user", lambda username, order_id: {
+        "order_id": order_id,
+        "product": "无线耳机",
+        "status": "已签收",
+    })
+    monkeypatch.setattr(router.db, "update_after_sale_request", lambda *args: None)
+    monkeypatch.setattr(router.db, "insert_ticket", lambda **kwargs: (
+        inserted.append(kwargs) or 701
+    ))
+    result = router.process_ticket("确认提交退款", username="user")
+
+    assert result["category"] == "退款申请"
+    assert result["status"] == "escalated"
+    assert result["reply_source"] == "escalate"
+    assert "AS-TEST-REFUND" in result["reply"]
+    assert "701" in result["reply"]
+    assert inserted[0]["category"] == "退款申请"
+    assert inserted[0]["status"] == "escalated"
+
+
 def test_refund_dispute_still_escalates(monkeypatch):
     monkeypatch.setattr(router.memory, "get_history", lambda username: [])
     monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
@@ -168,6 +313,12 @@ def test_cancel_order_followup_cancels_unshipped_order(monkeypatch):
     ]
     monkeypatch.setattr(router.memory, "get_history", lambda username: history)
     monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.db, "get_active_after_sale", lambda *args: None)
+    monkeypatch.setattr(router.db, "create_after_sale_request", lambda **kwargs: {
+        "request_no": "AS-TEST-DRAFT",
+        "status": "pending_confirmation",
+        "order_id": "A20240815002",
+    })
     monkeypatch.setattr(router.db, "get_order_for_user", lambda username, order_id: {
         "order_id": order_id, "product": "空气炸锅", "status": "待发货",
     })
@@ -176,8 +327,55 @@ def test_cancel_order_followup_cancels_unshipped_order(monkeypatch):
     ))
     result = router.process_ticket("A20240815002", username="user")
     assert result["reply_source"] == "agent"
-    assert "已成功取消" in result["reply"]
+    assert "确认要取消" in result["reply"]
+    assert "已成功取消" not in result["reply"]
     assert "cancel_skill" in result["route_trace"]
+
+
+def test_cancel_order_requires_explicit_confirmation_before_write(monkeypatch):
+    history = [
+        {"role": "user", "content": "A20240815002，我要取消订单"},
+        {"role": "assistant", "content": "订单 A20240815002 尚未发货，确认要取消吗？"},
+    ]
+    monkeypatch.setattr(router.memory, "get_history", lambda username: history)
+    monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.db, "get_order_for_user", lambda username, order_id: {
+        "order_id": order_id, "product": "空气炸锅", "status": "待发货",
+    })
+    monkeypatch.setattr(router.agent, "_cancel_order", lambda *args: (
+        (_ for _ in ()).throw(AssertionError("未确认前不应执行取消写操作"))
+    ))
+    result = router.process_ticket("我还没想好", username="user")
+    assert "确认是否取消" in result["reply"]
+
+
+def test_cancel_order_confirmation_executes_once(monkeypatch):
+    history = [
+        {"role": "user", "content": "A20240815002，我要取消订单"},
+        {"role": "assistant", "content": "订单 A20240815002 尚未发货，确认要取消吗？"},
+    ]
+    calls = []
+    monkeypatch.setattr(router.memory, "get_history", lambda username: history)
+    monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.db, "get_active_after_sale", lambda *args: {
+        "request_no": "AS-TEST-CANCEL",
+        "status": "pending_confirmation",
+        "order_id": "A20240815002",
+    })
+    monkeypatch.setattr(router.db, "get_order_for_user", lambda username, order_id: {
+        "order_id": order_id, "product": "空气炸锅", "status": "待发货",
+    })
+    monkeypatch.setattr(router.db, "find_after_sale_by_idempotency", lambda *args: {
+        "request_no": "AS-TEST-CANCEL",
+        "status": "pending_confirmation",
+    })
+    monkeypatch.setattr(router.db, "update_after_sale_request", lambda *args: None)
+    monkeypatch.setattr(router.agent, "_cancel_order", lambda order_id, username: (
+        calls.append((order_id, username)) or f"订单 {order_id}（空气炸锅）已成功取消"
+    ))
+    result = router.process_ticket("确认取消", username="user")
+    assert "已成功取消" in result["reply"]
+    assert calls == [("A20240815002", "user")]
 
 
 def test_cancel_order_followup_for_shipped_order_gives_carrier_guidance(monkeypatch):
@@ -243,14 +441,131 @@ def test_return_request_for_signed_order_is_saved_by_outer_ticket_flow(monkeypat
     history = [{"role": "assistant", "content": "请提供订单号，并告诉我退货原因。"}]
     monkeypatch.setattr(router.memory, "get_history", lambda username: history)
     monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.db, "get_active_after_sale", lambda *args: None)
+    monkeypatch.setattr(router.db, "create_after_sale_request", lambda **kwargs: {
+        "request_no": "AS-TEST-RETURN",
+        "status": "pending_confirmation",
+        "order_id": "A20240720003",
+        "reason": "不合适",
+    })
     monkeypatch.setattr(router.db, "get_order_for_user", lambda username, order_id: {
         "order_id": order_id, "product": "空气炸锅", "status": "已签收",
     })
     result = router.process_ticket("A20240720003，商品不合适，我要退货", username="user")
-    assert result["status"] == "escalated"
+    assert result["status"] == "auto"
     assert result["category"] == "退货申请"
+    assert result["reply_source"] == "agent"
+    assert "确认提交退货申请" in result["reply"]
+
+
+def test_return_request_is_submitted_only_after_confirmation(monkeypatch):
+    history = [
+        {"role": "user", "content": "A20240720003，商品不合适，我要退货"},
+        {"role": "assistant", "content": "订单 A20240720003 已签收，确认提交退货申请吗？"},
+    ]
+    monkeypatch.setattr(router.memory, "get_history", lambda username: history)
+    monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.db, "get_active_after_sale", lambda *args: None)
+    monkeypatch.setattr(router.db, "find_after_sale_by_idempotency", lambda *args: {
+        "request_no": "AS-TEST-RETURN",
+        "status": "pending_confirmation",
+        "order_id": "A20240720003",
+        "reason": "不合适",
+    })
+    monkeypatch.setattr(router.db, "update_after_sale_request", lambda *args: None)
+    monkeypatch.setattr(router.db, "get_order_for_user", lambda username, order_id: {
+        "order_id": order_id, "product": "空气炸锅", "status": "已签收",
+    })
+    result = router.process_ticket("确认提交退货", username="user")
+    assert result["status"] == "escalated"
     assert result["reply_source"] == "escalate"
-    assert "已为您登记退货申请" in result["reply"]
+    assert "已提交" in result["reply"]
+    assert "人工审核" in result["reply"]
+
+
+def test_repair_application_collects_issue_and_waits_for_confirmation(monkeypatch):
+    history = [
+        {"role": "user", "content": "我的耳机坏了，想申请售后维修"},
+        {"role": "assistant", "content": "请提供订单号，并描述具体故障。"},
+    ]
+    monkeypatch.setattr(router.memory, "get_history", lambda username: history)
+    monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.db, "get_order_for_user", lambda username, order_id: {
+        "order_id": order_id,
+        "product": "无线耳机",
+        "status": "已签收",
+    })
+    monkeypatch.setattr(router.db, "get_active_after_sale", lambda *args: None)
+    monkeypatch.setattr(router.db, "create_after_sale_request", lambda **kwargs: {
+        "request_no": "AS-TEST-REPAIR",
+        "status": "pending_confirmation",
+        "order_id": "A20240812001",
+        "request_type": "repair",
+        "reason": "左耳无声",
+    })
+    result = router.process_ticket("A20240812001，左耳无声", username="user")
+
+    assert result["category"] == "售后维修"
+    assert result["status"] == "auto"
+    assert result["reply_source"] == "agent"
+    assert "确认提交维修申请" in result["reply"]
+    assert "AS-TEST-REPAIR" in result["reply"]
+
+
+def test_repair_application_submits_unified_request_and_ticket(monkeypatch):
+    history = [
+        {"role": "user", "content": "A20240812001，左耳无声"},
+        {"role": "assistant", "content": "已核对订单，确认提交维修申请吗？"},
+    ]
+    inserted = []
+    monkeypatch.setattr(router.memory, "get_history", lambda username: history)
+    monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.db, "get_active_after_sale", lambda *args: {
+        "request_no": "AS-TEST-REPAIR",
+        "status": "pending_confirmation",
+        "order_id": "A20240812001",
+        "request_type": "repair",
+        "reason": "左耳无声",
+    })
+    monkeypatch.setattr(router.db, "get_order_for_user", lambda username, order_id: {
+        "order_id": order_id,
+        "product": "无线耳机",
+        "status": "已签收",
+    })
+    monkeypatch.setattr(router.db, "update_after_sale_request", lambda *args: None)
+    monkeypatch.setattr(router.db, "insert_ticket", lambda **kwargs: (
+        inserted.append(kwargs) or 702
+    ))
+    result = router.process_ticket("确认提交维修", username="user")
+
+    assert result["category"] == "售后维修"
+    assert result["status"] == "escalated"
+    assert result["reply_source"] == "escalate"
+    assert "AS-TEST-REPAIR" in result["reply"]
+    assert "702" in result["reply"]
+    assert inserted[0]["category"] == "售后维修"
+
+
+def test_repair_application_does_not_create_duplicate_ticket(monkeypatch):
+    history = [
+        {"role": "assistant", "content": "已核对订单，确认提交维修申请吗？"},
+    ]
+    monkeypatch.setattr(router.memory, "get_history", lambda username: history)
+    monkeypatch.setattr(router.profile, "schedule_extraction", lambda *args: None)
+    monkeypatch.setattr(router.db, "get_active_after_sale", lambda *args: {
+        "request_no": "AS-TEST-REPAIR",
+        "status": "processing",
+        "order_id": "A20240812001",
+        "request_type": "repair",
+        "reason": "左耳无声",
+    })
+    monkeypatch.setattr(router.db, "insert_ticket", lambda **kwargs: (
+        (_ for _ in ()).throw(AssertionError("处理中不能重复创建维修工单"))
+    ))
+    result = router.process_ticket("确认提交维修", username="user")
+
+    assert "已提交" in result["reply"]
+    assert "不要重复提交" in result["reply"]
 
 
 def test_chat_reply_has_local_fallback_for_meta_intent(monkeypatch):

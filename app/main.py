@@ -30,9 +30,9 @@ from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException,
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import auth, config, db, document_ingest, events, feedback, memory, metrics, ocr, privacy, profile, rag, redis_store, router, sla, vision, wechat
+from app import after_sale, auth, config, db, document_ingest, events, feedback, memory, metrics, ocr, privacy, profile, rag, redis_store, router, sla, vision, wechat
 from app.config import setup_logging
-from app.schemas import FAQCreate, FAQUpdate, FeedbackRequest, FeedbackTagRequest, LoginOut, LoginRequest, ManagedPasswordReset, ManagedUserCreate, ManagedUserUpdate, OrderCreate, OrderUpdate, PasswordResetChallengeRequest, PasswordResetRequest, PhoneCodeSendRequest, PhoneCodeVerifyRequest, ProfileFactUpdate, RegisterRequest, ResolveRequest, TicketAssignRequest, TicketCreate, TicketStatusRequest
+from app.schemas import AfterSaleAnnotationRequest, AfterSaleRequestSubmit, AfterSaleRetryRequest, FAQCreate, FAQUpdate, FeedbackRequest, FeedbackTagRequest, LoginOut, LoginRequest, ManagedPasswordReset, ManagedUserCreate, ManagedUserUpdate, OrderCreate, OrderUpdate, PasswordResetChallengeRequest, PasswordResetRequest, PhoneCodeSendRequest, PhoneCodeVerifyRequest, ProfileFactUpdate, RegisterRequest, ResolveRequest, ReturnRequestSubmit, TicketAssignRequest, TicketCreate, TicketStatusRequest
 
 logger = logging.getLogger("app.main")
 
@@ -525,11 +525,12 @@ async def event_stream(
     def can_receive(event: events.Event) -> bool:
         if is_admin or is_manager or is_agent:
             return event.event_type in (
-                "ticket_escalated", "customer_message", "human_replied", "ticket_updated"
+                "ticket_escalated", "customer_message", "human_replied",
+                "ticket_updated", "after_sale_updated",
             )
         return (
-            event.event_type == "human_replied"
-            and event.payload.get("username") == event_user
+            event.payload.get("username") == event_user
+            and event.event_type in ("human_replied", "after_sale_updated")
         )
 
     async def generate():
@@ -693,6 +694,55 @@ def get_entity_archive(username: str = Depends(auth.require_user)):
     }
 
 
+@app.get("/api/after-sales")
+def list_after_sales(limit: int = 20, username: str = Depends(auth.require_user)):
+    """查询当前客户自己的售后申请进度。"""
+    requests = db.list_after_sale_requests(username, limit=limit)
+    return [after_sale.public_request(item) for item in requests]
+
+
+def _validate_after_sale_filters(
+    request_type: str = "",
+    status: str = "",
+) -> tuple[str | None, str | None]:
+    """校验客服/经理查询参数，避免把内部任意字段当作过滤条件。"""
+    normalized_type = request_type.strip() or None
+    normalized_status = status.strip() or None
+    if normalized_type and normalized_type not in after_sale.REQUEST_TYPES:
+        raise HTTPException(status_code=400, detail="不支持的售后类型筛选")
+    if normalized_status and normalized_status not in after_sale.STATUSES:
+        raise HTTPException(status_code=400, detail="不支持的售后状态筛选")
+    return normalized_type, normalized_status
+
+
+@app.get("/api/after-sales/queue")
+def list_after_sale_queue(
+    request_type: str = "",
+    status: str = "",
+    order_id: str = "",
+    limit: int = 100,
+    username: str = Depends(auth.require_agent_permission("ticket.view")),
+):
+    """客服查询售后申请队列；只返回申请摘要，不返回客户敏感字段。"""
+    normalized_type, normalized_status = _validate_after_sale_filters(request_type, status)
+    requests = db.search_after_sale_requests(
+        request_type=normalized_type,
+        status=normalized_status,
+        order_id=order_id.strip() or None,
+        limit=limit,
+    )
+    return [after_sale.public_staff_request(item) for item in requests]
+
+
+@app.get("/api/after-sales/{request_no}")
+def get_after_sale(request_no: str, username: str = Depends(auth.require_user)):
+    """按申请号查询当前客户自己的售后申请。"""
+    request = db.get_after_sale_request(request_no.strip(), username)
+    if request is None:
+        raise HTTPException(status_code=404, detail="售后申请不存在")
+    return after_sale.public_request(request)
+
+
 # ---------------- 业务 API（需登录） ----------------
 
 def _save_ticket_record(record: dict, username: str) -> dict:
@@ -795,7 +845,20 @@ def _continue_human_handoff(ticket_text: str, username: str,
 @app.post("/api/tickets")
 def create_ticket(payload: TicketCreate, username: str = Depends(auth.require_user)):
     """发送一条客服消息 / 提交一张工单，返回 AI 处理结果。"""
-    handoff = _continue_human_handoff(payload.ticket_text, username)
+    safe_text = privacy.mask_sensitive(payload.ticket_text)
+    active_handoff = (
+        db.get_active_human_ticket_for_user(username)
+        if router.is_standalone_ai_request(safe_text)
+        else None
+    )
+    if active_handoff is not None:
+        _end_human_session(
+            username,
+            reason="客户发起新的 AI 自助请求，结束当前人工会话",
+        )
+        handoff = None
+    else:
+        handoff = _continue_human_handoff(payload.ticket_text, username)
     if handoff is not None:
         return handoff
     record = router.process_ticket(payload.ticket_text, username=username,
@@ -849,14 +912,26 @@ async def create_multimodal_ticket(
     else:
         ticket_text = "用户发送了一张图片，但图片识别暂不可用，请转人工处理。"
 
-    handoff = _continue_human_handoff(
-        ticket_text,
-        username,
-        image_analysis=analysis,
-        image_analysis_status=analysis_status,
-        ocr_text=ocr_text,
-        ocr_status=ocr_status,
+    active_handoff = (
+        db.get_active_human_ticket_for_user(username)
+        if router.is_standalone_ai_request(ticket_text)
+        else None
     )
+    if active_handoff is not None:
+        _end_human_session(
+            username,
+            reason="客户发起新的 AI 自助请求，结束当前人工会话",
+        )
+        handoff = None
+    else:
+        handoff = _continue_human_handoff(
+            ticket_text,
+            username,
+            image_analysis=analysis,
+            image_analysis_status=analysis_status,
+            ocr_text=ocr_text,
+            ocr_status=ocr_status,
+        )
     if handoff is not None:
         return handoff
 
@@ -929,7 +1004,1027 @@ def ticket_feedback(ticket_id: int, payload: FeedbackRequest, username: str = De
 @app.get("/api/escalations")
 def list_escalations(username: str = Depends(auth.require_agent_permission("ticket.view"))):
     """查询所有升级给人工的工单（含待处理 + 已处理）。"""
-    return db.list_escalations()
+    tickets = db.list_escalations()
+    for ticket in tickets:
+        ticket["after_sale_annotation"] = after_sale.public_annotation(
+            ticket.get("after_sale_annotation")
+        )
+        ticket["after_sale_request"] = after_sale.public_request(
+            ticket.get("after_sale_request")
+        ) if ticket.get("after_sale_request") else None
+        ticket["order_context"] = after_sale.public_order_context(
+            ticket.get("order_context")
+        )
+    return tickets
+
+
+@app.get("/api/escalations/{ticket_id}/after-sale-audit")
+def get_ticket_after_sale_audit(
+    ticket_id: int,
+    username: str = Depends(auth.require_agent_permission("ticket.view")),
+):
+    """客服查看当前工单售后申请及其来源工单审计记录。"""
+    ticket = db.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    request = db.get_after_sale_request_for_ticket(ticket_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="该工单没有关联售后申请")
+    logs = db.list_ticket_logs(ticket_id)
+    return {
+        "ticket_id": ticket_id,
+        "request": after_sale.public_staff_request(
+            {**request, "source_ticket_status": ticket.get("status")}
+        ),
+        "audit": [after_sale.public_audit_log(item) for item in logs],
+        "attempts": [
+            after_sale.public_attempt(item)
+            for item in db.list_after_sale_attempts(
+                request.get("request_no"),
+                ticket.get("username"),
+            )
+        ],
+    }
+
+
+@app.put("/api/escalations/{ticket_id}/after-sale-annotation")
+def save_ticket_after_sale_annotation(
+    ticket_id: int,
+    payload: AfterSaleAnnotationRequest,
+    username: str = Depends(auth.require_agent_permission("ticket.reply")),
+):
+    """保存人工工单的售后标注；该动作不创建退货/退款申请。"""
+    if payload.request_type not in after_sale.ANNOTATION_TYPES:
+        raise HTTPException(status_code=400, detail="不支持的售后类型")
+    if payload.stage not in after_sale.ANNOTATION_STAGES:
+        raise HTTPException(status_code=400, detail="不支持的售后处理阶段")
+    if payload.stage == "submitted":
+        raise HTTPException(status_code=400, detail="“已提交售后”只能由真实售后申请接口更新")
+    if payload.stage == "completed":
+        raise HTTPException(status_code=400, detail="“已完成”只能由真实售后操作接口更新")
+
+    ticket = db.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    if ticket.get("status") not in ("escalated", "in_progress", "waiting_customer"):
+        raise HTTPException(status_code=409, detail="已结束工单不能修改售后标注")
+    if ticket.get("assigned_to") and ticket.get("assigned_to") != username:
+        raise HTTPException(status_code=409, detail="该工单正在由其他坐席处理")
+
+    order_id = (payload.order_id or "").strip() or None
+    order = None
+    if order_id:
+        order = db.get_order_for_user(ticket.get("username"), order_id)
+        if order is None:
+            raise HTTPException(status_code=400, detail="订单不存在或不属于当前客户")
+
+    values = {
+        "request_type": payload.request_type,
+        "stage": payload.stage,
+        "order_id": order_id,
+        "product": (order or {}).get("product") if order else None,
+        "reason": (payload.reason or "").strip() or None,
+        "item_status": (payload.item_status or "").strip() or None,
+        "note": (payload.note or "").strip() or None,
+    }
+    annotation = db.upsert_ticket_after_sale_annotation(
+        ticket_id=ticket_id,
+        operator=username,
+        **values,
+    )
+    if annotation is None:
+        raise HTTPException(status_code=500, detail="售后标注保存失败")
+
+    detail = (
+        f"售后标注：{after_sale.ANNOTATION_TYPE_LABELS[payload.request_type]} / "
+        f"{after_sale.ANNOTATION_STAGE_LABELS[payload.stage]}"
+    )
+    db.insert_ticket_log(ticket_id, "after_sale_annotation", detail, username)
+    public_annotation = after_sale.public_annotation(annotation)
+    events.broker.publish(
+        "ticket_updated",
+        {
+            "ticket_id": ticket_id,
+            "status": ticket.get("status"),
+            "assigned_to": ticket.get("assigned_to"),
+            "after_sale_annotation": public_annotation,
+        },
+    )
+    return {"status": "ok", "id": ticket_id, "annotation": public_annotation}
+
+
+@app.post("/api/escalations/{ticket_id}/return-request")
+def submit_ticket_return_request(
+    ticket_id: int,
+    payload: ReturnRequestSubmit,
+    username: str = Depends(auth.require_agent_permission("ticket.reply")),
+):
+    """客服确认后创建真实退货申请，并把当前标注推进为已提交。"""
+    if not payload.confirmed:
+        raise HTTPException(status_code=400, detail="请确认后再提交退货申请")
+
+    ticket = db.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    if ticket.get("status") not in ("escalated", "in_progress", "waiting_customer"):
+        raise HTTPException(status_code=409, detail="已结束工单不能提交退货申请")
+    if ticket.get("assigned_to") and ticket.get("assigned_to") != username:
+        raise HTTPException(status_code=409, detail="该工单正在由其他坐席处理")
+
+    annotation = db.get_ticket_after_sale_annotation(ticket_id)
+    if not annotation or annotation.get("request_type") != "return":
+        raise HTTPException(status_code=409, detail="请先将工单标注为退货申请")
+
+    order_id = (annotation.get("order_id") or "").strip()
+    reason = (annotation.get("reason") or "").strip()
+    if not order_id:
+        raise HTTPException(status_code=400, detail="请先填写并核验订单号")
+    if not reason:
+        raise HTTPException(status_code=400, detail="请先填写退货原因")
+
+    order = db.get_order_for_user(ticket.get("username"), order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="订单不存在或不属于当前客户")
+
+    order_status = order.get("status")
+    if order_status == "待发货":
+        raise HTTPException(status_code=409, detail="订单尚未发货，建议先为客户办理取消订单")
+    if order_status in {"已发货", "运输中"}:
+        raise HTTPException(status_code=409, detail="订单尚未签收，暂不能直接提交退货申请")
+    if order_status == "已退货":
+        raise HTTPException(status_code=409, detail="该订单已经退货，不能重复提交")
+    if order_status not in {"已签收", "已完成"}:
+        raise HTTPException(status_code=409, detail="当前订单状态不支持提交退货申请")
+
+    request_key = after_sale.idempotency_key(
+        ticket.get("username") or "",
+        "return",
+        order_id,
+        reason,
+    )
+    existing = db.find_after_sale_by_idempotency(ticket.get("username") or "", request_key)
+    if existing is not None:
+        if (
+            existing.get("status") in {"draft", "pending_confirmation", "processing"}
+            and annotation.get("stage") != "submitted"
+        ):
+            customer = ticket.get("username") or ""
+            attempt = _start_staff_after_sale_attempt(ticket_id, customer, username, existing)
+            try:
+                if existing.get("status") in {"draft", "pending_confirmation"}:
+                    existing = db.update_after_sale_request(
+                        existing.get("request_no"),
+                        customer,
+                        "processing",
+                        "客服已提交退货申请，等待人工审核",
+                    ) or existing
+                updated_annotation = db.upsert_ticket_after_sale_annotation(
+                    ticket_id=ticket_id,
+                    request_type="return",
+                    stage="submitted",
+                    order_id=order_id,
+                    product=order.get("product"),
+                    reason=reason,
+                    item_status=annotation.get("item_status"),
+                    note=annotation.get("note"),
+                    operator=username,
+                )
+                if updated_annotation is None:
+                    raise HTTPException(status_code=500, detail="退货申请已找到，但售后标注更新失败，请重试")
+                request_public = after_sale.public_request(existing)
+                annotation_public = after_sale.public_annotation(updated_annotation)
+                db.insert_ticket_log(
+                    ticket_id,
+                    "after_sale_submitted",
+                    f"已补齐退货申请 {request_public.get('request_no')} 的工单标注",
+                    username,
+                )
+                events.broker.publish(
+                    "ticket_updated",
+                    {
+                        "ticket_id": ticket_id,
+                        "username": customer,
+                        "status": ticket.get("status"),
+                        "assigned_to": ticket.get("assigned_to"),
+                        "after_sale": request_public,
+                        "after_sale_annotation": annotation_public,
+                    },
+                )
+                events.broker.publish(
+                    "after_sale_updated",
+                    {"ticket_id": ticket_id, "username": customer, "after_sale": request_public},
+                )
+                _finish_staff_after_sale_attempt(
+                    customer, existing, attempt, "succeeded",
+                    "客服已提交退货申请，等待人工审核", username
+                )
+                return {
+                    "status": "ok",
+                    "id": ticket_id,
+                    "idempotent": True,
+                    "after_sale": request_public,
+                    "annotation": annotation_public,
+                }
+            except HTTPException as exc:
+                _finish_staff_after_sale_attempt(
+                    customer, existing, attempt, "failed",
+                    error_code="annotation_update_failed",
+                    error_message=str(exc.detail),
+                    operator=username,
+                )
+                raise
+            except Exception as exc:
+                _mark_staff_after_sale_failed(customer, existing, attempt, str(exc), username)
+                raise
+        return {
+            "status": "ok",
+            "id": ticket_id,
+            "idempotent": True,
+            "after_sale": after_sale.public_request(existing),
+            "annotation": after_sale.public_annotation(annotation),
+        }
+
+    request = db.create_after_sale_request(
+        username=ticket.get("username") or "",
+        order_id=order_id,
+        request_type="return",
+        status="draft",
+        idempotency_key=request_key,
+        reason=reason,
+        detail=f"客服工单 #{ticket_id} 提交退货申请",
+        ticket_id=ticket_id,
+    )
+    customer = ticket.get("username") or ""
+    attempt = _start_staff_after_sale_attempt(ticket_id, customer, username, request)
+    try:
+        request = db.update_after_sale_request(
+            request.get("request_no"),
+            customer,
+            "processing",
+            "客服已提交退货申请，等待人工审核",
+        ) or request
+
+        updated_annotation = db.upsert_ticket_after_sale_annotation(
+            ticket_id=ticket_id,
+            request_type="return",
+            stage="submitted",
+            order_id=order_id,
+            product=order.get("product"),
+            reason=reason,
+            item_status=annotation.get("item_status"),
+            note=annotation.get("note"),
+            operator=username,
+        )
+        if updated_annotation is None:
+            raise HTTPException(status_code=500, detail="退货申请已创建，但售后标注更新失败，请联系管理员")
+    except HTTPException as exc:
+        _finish_staff_after_sale_attempt(
+            customer, request, attempt, "failed",
+            error_code="annotation_update_failed",
+            error_message=str(exc.detail),
+            operator=username,
+        )
+        db.update_after_sale_request(request.get("request_no"), customer, "failed", str(exc.detail))
+        raise
+    except Exception as exc:
+        _mark_staff_after_sale_failed(customer, request, attempt, str(exc), username)
+        raise
+
+    request_public = after_sale.public_request(request)
+    annotation_public = after_sale.public_annotation(updated_annotation)
+    db.insert_ticket_log(
+        ticket_id,
+        "after_sale_submitted",
+        f"已提交退货申请 {request_public.get('request_no')}",
+        username,
+    )
+    events.broker.publish(
+        "ticket_updated",
+        {
+            "ticket_id": ticket_id,
+            "username": ticket.get("username"),
+            "status": ticket.get("status"),
+            "assigned_to": ticket.get("assigned_to"),
+            "after_sale": request_public,
+            "after_sale_annotation": annotation_public,
+        },
+    )
+    events.broker.publish(
+        "after_sale_updated",
+        {
+            "ticket_id": ticket_id,
+            "username": ticket.get("username"),
+            "after_sale": request_public,
+        },
+    )
+    _finish_staff_after_sale_attempt(
+        customer, request, attempt, "succeeded",
+        "客服已提交退货申请，等待人工审核", username
+    )
+    return {
+        "status": "ok",
+        "id": ticket_id,
+        "idempotent": False,
+        "after_sale": request_public,
+        "annotation": annotation_public,
+    }
+
+
+def _submit_ticket_after_sale_request(
+    ticket_id: int,
+    payload: AfterSaleRequestSubmit,
+    username: str,
+    request_type: str,
+    request_label: str,
+    processing_result: str,
+    reason_label: str,
+    reject_existing_refund: bool = False,
+):
+    """退款/维修共用的客服副作用提交内核。"""
+    if not payload.confirmed:
+        raise HTTPException(status_code=400, detail=f"请确认后再提交{request_label}")
+
+    ticket = db.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    if ticket.get("status") not in ("escalated", "in_progress", "waiting_customer"):
+        raise HTTPException(status_code=409, detail=f"已结束工单不能提交{request_label}")
+    if ticket.get("assigned_to") and ticket.get("assigned_to") != username:
+        raise HTTPException(status_code=409, detail="该工单正在由其他坐席处理")
+
+    annotation = db.get_ticket_after_sale_annotation(ticket_id)
+    if not annotation or annotation.get("request_type") != request_type:
+        raise HTTPException(status_code=409, detail=f"请先将工单标注为{request_label}")
+
+    order_id = (annotation.get("order_id") or "").strip()
+    reason = (annotation.get("reason") or "").strip()
+    if not order_id:
+        raise HTTPException(status_code=400, detail="请先填写并核验订单号")
+    if not reason:
+        raise HTTPException(status_code=400, detail=f"请先填写{reason_label}")
+
+    customer = ticket.get("username") or ""
+    order = db.get_order_for_user(customer, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="订单不存在或不属于当前客户")
+    if order.get("status") == "已取消":
+        raise HTTPException(status_code=409, detail=f"订单已取消，不能提交{request_label}")
+    if reject_existing_refund and order.get("refund_status"):
+        raise HTTPException(status_code=409, detail="该订单已有退款记录，请先核对退款进度，避免重复申请")
+
+    request_key = after_sale.idempotency_key(customer, request_type, order_id, reason)
+    existing = db.find_after_sale_by_idempotency(customer, request_key)
+    if existing is not None:
+        if (
+            existing.get("status") in {"draft", "pending_confirmation", "processing"}
+            and annotation.get("stage") != "submitted"
+        ):
+            attempt = _start_staff_after_sale_attempt(ticket_id, customer, username, existing)
+            try:
+                if existing.get("status") in {"draft", "pending_confirmation"}:
+                    existing = db.update_after_sale_request(
+                        existing.get("request_no"),
+                        customer,
+                        "processing",
+                        processing_result,
+                    ) or existing
+                updated_annotation = db.upsert_ticket_after_sale_annotation(
+                    ticket_id=ticket_id,
+                    request_type=request_type,
+                    stage="submitted",
+                    order_id=order_id,
+                    product=order.get("product"),
+                    reason=reason,
+                    item_status=annotation.get("item_status"),
+                    note=annotation.get("note"),
+                    operator=username,
+                )
+                if updated_annotation is None:
+                    raise HTTPException(status_code=500, detail=f"{request_label}已找到，但售后标注更新失败，请重试")
+                result = _publish_submitted_after_sale(
+                    ticket_id, ticket, username, existing, updated_annotation, idempotent=True
+                )
+                _finish_staff_after_sale_attempt(
+                    customer, existing, attempt, "succeeded", processing_result, username
+                )
+                return result
+            except HTTPException as exc:
+                _finish_staff_after_sale_attempt(
+                    customer, existing, attempt, "failed",
+                    error_code="annotation_update_failed",
+                    error_message=str(exc.detail),
+                    operator=username,
+                )
+                raise
+            except Exception as exc:
+                _mark_staff_after_sale_failed(customer, existing, attempt, str(exc), username)
+                raise
+        return {
+            "status": "ok",
+            "id": ticket_id,
+            "idempotent": True,
+            "after_sale": after_sale.public_request(existing),
+            "annotation": after_sale.public_annotation(annotation),
+        }
+
+    request = db.create_after_sale_request(
+        username=customer,
+        order_id=order_id,
+        request_type=request_type,
+        status="draft",
+        idempotency_key=request_key,
+        reason=reason,
+        detail=f"客服工单 #{ticket_id} 提交{request_label}",
+        ticket_id=ticket_id,
+    )
+    attempt = _start_staff_after_sale_attempt(ticket_id, customer, username, request)
+    try:
+        request = db.update_after_sale_request(
+            request.get("request_no"),
+            customer,
+            "processing",
+            processing_result,
+        ) or request
+        updated_annotation = db.upsert_ticket_after_sale_annotation(
+            ticket_id=ticket_id,
+            request_type=request_type,
+            stage="submitted",
+            order_id=order_id,
+            product=order.get("product"),
+            reason=reason,
+            item_status=annotation.get("item_status"),
+            note=annotation.get("note"),
+            operator=username,
+        )
+        if updated_annotation is None:
+            raise HTTPException(status_code=500, detail=f"{request_label}已创建，但售后标注更新失败，请联系管理员")
+        result = _publish_submitted_after_sale(
+            ticket_id, ticket, username, request, updated_annotation, idempotent=False
+        )
+        _finish_staff_after_sale_attempt(
+            customer, request, attempt, "succeeded", processing_result, username
+        )
+        return result
+    except HTTPException as exc:
+        _finish_staff_after_sale_attempt(
+            customer, request, attempt, "failed",
+            error_code="annotation_update_failed",
+            error_message=str(exc.detail),
+            operator=username,
+        )
+        db.update_after_sale_request(
+            request.get("request_no"),
+            customer,
+            "failed",
+            str(exc.detail),
+        )
+        raise
+    except Exception as exc:
+        _mark_staff_after_sale_failed(customer, request, attempt, str(exc), username)
+        raise
+
+
+def _publish_submitted_after_sale(
+    ticket_id: int,
+    ticket: dict,
+    username: str,
+    request: dict,
+    annotation: dict,
+    idempotent: bool,
+) -> dict:
+    """统一写入售后提交审计并通知客服与客户。"""
+    request_public = after_sale.public_request(request)
+    annotation_public = after_sale.public_annotation(annotation)
+    db.insert_ticket_log(
+        ticket_id,
+        "after_sale_submitted",
+        f"已提交{request_public.get('request_type_label', '售后申请')} {request_public.get('request_no')}",
+        username,
+    )
+    payload = {
+        "ticket_id": ticket_id,
+        "username": ticket.get("username"),
+        "status": ticket.get("status"),
+        "assigned_to": ticket.get("assigned_to"),
+        "after_sale": request_public,
+        "after_sale_annotation": annotation_public,
+    }
+    events.broker.publish("ticket_updated", payload)
+    events.broker.publish(
+        "after_sale_updated",
+        {
+            "ticket_id": ticket_id,
+            "username": ticket.get("username"),
+            "after_sale": request_public,
+        },
+    )
+    return {
+        "status": "ok",
+        "id": ticket_id,
+        "idempotent": idempotent,
+        "after_sale": request_public,
+        "annotation": annotation_public,
+    }
+
+
+def _retry_processing_result(request_type: str) -> str:
+    return {
+        "return": "客服已重新提交退货申请，等待人工审核",
+        "refund": "客服已重新提交退款申请，等待人工审核",
+        "repair": "客服已重新提交维修申请，等待人工处理",
+    }.get(request_type, "客服已重新提交售后申请，等待人工处理")
+
+
+def _retry_request_label(request_type: str) -> str:
+    return after_sale.REQUEST_TYPE_LABELS.get(request_type, "售后申请")
+
+
+def _validate_retry_order(request_type: str, order: dict) -> None:
+    status = order.get("status")
+    if status == "已取消":
+        raise HTTPException(status_code=409, detail="订单已取消，不能重试该售后申请")
+    if request_type == "return" and status not in {"已签收", "已完成"}:
+        raise HTTPException(status_code=409, detail="当前订单状态不支持重试退货申请")
+    if request_type == "repair" and status not in {"已发货", "运输中", "已签收", "已完成"}:
+        raise HTTPException(status_code=409, detail="当前订单状态不支持重试维修申请")
+    if request_type == "refund" and order.get("refund_status"):
+        raise HTTPException(status_code=409, detail="该订单已有退款记录，不能重复重试退款申请")
+
+
+def _start_staff_after_sale_attempt(
+    ticket_id: int,
+    customer: str,
+    operator: str,
+    request: dict,
+) -> dict | None:
+    try:
+        return db.start_after_sale_attempt(
+            request_no=request.get("request_no"),
+            username=customer,
+            operator=operator,
+            ticket_id=ticket_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("客服售后尝试开始记录失败 request_no=%s：%s", request.get("request_no"), exc)
+        return None
+
+
+def _finish_staff_after_sale_attempt(
+    customer: str,
+    request: dict,
+    attempt: dict | None,
+    status: str,
+    result: str | None = None,
+    operator: str | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    if not attempt:
+        return
+    try:
+        db.finish_after_sale_attempt(
+            request_no=request.get("request_no"),
+            username=customer,
+            attempt_no=attempt.get("attempt_no"),
+            status=status,
+            operator=operator,
+            result=result,
+            error_code=error_code,
+            error_message=error_message,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("客服售后尝试结果记录失败 request_no=%s：%s", request.get("request_no"), exc)
+
+
+def _mark_staff_after_sale_failed(
+    customer: str,
+    request: dict,
+    attempt: dict | None,
+    error_message: str,
+    operator: str,
+) -> None:
+    _finish_staff_after_sale_attempt(
+        customer,
+        request,
+        attempt,
+        "failed",
+        error_code="after_sale_submit_failed",
+        error_message=error_message,
+        operator=operator,
+    )
+    db.update_after_sale_request(
+        request.get("request_no"),
+        customer,
+        "failed",
+        error_message,
+    )
+
+
+@app.post("/api/escalations/{ticket_id}/after-sale-retry")
+def retry_ticket_after_sale_request(
+    ticket_id: int,
+    payload: AfterSaleRetryRequest,
+    username: str = Depends(auth.require_agent_permission("ticket.reply")),
+):
+    """重试失败的售后申请；始终复用原申请号和原幂等键。"""
+    if not payload.confirmed:
+        raise HTTPException(status_code=400, detail="请确认后再重新提交售后申请")
+
+    ticket = db.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    if ticket.get("status") not in ("escalated", "in_progress", "waiting_customer"):
+        raise HTTPException(status_code=409, detail="已结束工单不能重试售后申请")
+    if ticket.get("assigned_to") and ticket.get("assigned_to") != username:
+        raise HTTPException(status_code=409, detail="该工单正在由其他坐席处理")
+
+    customer = ticket.get("username") or ""
+    request = db.get_after_sale_request(payload.request_no.strip(), customer)
+    if request is None:
+        raise HTTPException(status_code=404, detail="售后申请不存在")
+    if request.get("ticket_id") not in (None, ticket_id):
+        raise HTTPException(status_code=409, detail="该售后申请不属于当前工单")
+    if request.get("status") != "failed":
+        raise HTTPException(status_code=409, detail="只有处理失败的售后申请可以重试")
+
+    request_type = request.get("request_type")
+    if request_type not in {"return", "refund", "repair", "cancel"}:
+        raise HTTPException(status_code=409, detail="当前售后类型不支持重试")
+    annotation = db.get_ticket_after_sale_annotation(ticket_id)
+    if not annotation or annotation.get("request_type") != request_type:
+        raise HTTPException(status_code=409, detail=f"请先将工单标注为{_retry_request_label(request_type)}")
+
+    order_id = (request.get("order_id") or annotation.get("order_id") or "").strip()
+    if not order_id:
+        raise HTTPException(status_code=400, detail="售后申请缺少订单号，无法重试")
+    order = db.get_order_for_user(customer, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="订单不存在或不属于当前客户")
+    if request_type == "cancel":
+        if order.get("status") not in {"待发货", "已取消"}:
+            raise HTTPException(status_code=409, detail="当前订单状态不能重试取消订单")
+    else:
+        _validate_retry_order(request_type, order)
+
+    retry_result = _retry_processing_result(request_type)
+    try:
+        attempt = db.start_after_sale_attempt(
+            request_no=request.get("request_no"),
+            username=customer,
+            operator=username,
+            ticket_id=ticket_id,
+            require_status="failed",
+            processing_result=retry_result,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="该售后申请正在处理中或已被其他坐席重试") from exc
+    try:
+        if request_type == "cancel":
+            outcome = db.cancel_order_with_request(
+                username=customer,
+                order_id=order_id,
+                idempotency_key=request.get("idempotency_key"),
+                ticket_id=ticket_id,
+                reason=(request.get("reason") or annotation.get("reason") or "客户申请取消订单"),
+                detail=f"客服工单 #{ticket_id} 重试取消订单",
+            )
+            if outcome.get("outcome") != "completed":
+                raise HTTPException(status_code=409, detail="订单当前状态不能重试取消订单")
+            updated_annotation = db.upsert_ticket_after_sale_annotation(
+                ticket_id=ticket_id,
+                request_type="cancel",
+                stage="completed",
+                order_id=order_id,
+                product=(outcome.get("order") or order).get("product"),
+                reason=annotation.get("reason"),
+                item_status=annotation.get("item_status"),
+                note=annotation.get("note"),
+                operator=username,
+            )
+            if updated_annotation is None:
+                raise RuntimeError("取消成功但工单标注更新失败")
+            request = outcome["request"]
+            request_public = after_sale.public_request(request)
+            annotation_public = after_sale.public_annotation(updated_annotation)
+            db.finish_after_sale_attempt(
+                request_no=request.get("request_no"),
+                username=customer,
+                attempt_no=attempt["attempt_no"],
+                status="succeeded",
+                operator=username,
+                result="取消订单重试成功",
+            )
+            db.insert_ticket_log(
+                ticket_id,
+                "after_sale_completed",
+                f"重试完成取消订单 {request_public.get('request_no')}",
+                username,
+            )
+            events.broker.publish(
+                "ticket_updated",
+                {
+                    "ticket_id": ticket_id,
+                    "username": customer,
+                    "status": ticket.get("status"),
+                    "assigned_to": ticket.get("assigned_to"),
+                    "after_sale": request_public,
+                    "after_sale_annotation": annotation_public,
+                },
+            )
+            events.broker.publish(
+                "after_sale_updated",
+                {"ticket_id": ticket_id, "username": customer, "after_sale": request_public},
+            )
+            return {
+                "status": "ok",
+                "id": ticket_id,
+                "idempotent": bool(outcome.get("idempotent")),
+                "after_sale": request_public,
+                "annotation": annotation_public,
+                "order": after_sale.public_order_context(outcome.get("order") or order),
+            }
+
+        processing_result = retry_result
+        updated_request = db.update_after_sale_request(
+            request.get("request_no"),
+            customer,
+            "processing",
+            processing_result,
+        )
+        if updated_request is None:
+            raise RuntimeError("售后申请状态更新失败")
+        updated_annotation = db.upsert_ticket_after_sale_annotation(
+            ticket_id=ticket_id,
+            request_type=request_type,
+            stage="submitted",
+            order_id=order_id,
+            product=order.get("product"),
+            reason=annotation.get("reason") or request.get("reason"),
+            item_status=annotation.get("item_status"),
+            note=annotation.get("note"),
+            operator=username,
+        )
+        if updated_annotation is None:
+            raise RuntimeError("售后申请已更新，但工单标注更新失败")
+        db.finish_after_sale_attempt(
+            request_no=request.get("request_no"),
+            username=customer,
+            attempt_no=attempt["attempt_no"],
+            status="succeeded",
+            operator=username,
+            result=processing_result,
+        )
+        return _publish_submitted_after_sale(
+            ticket_id,
+            ticket,
+            username,
+            updated_request,
+            updated_annotation,
+            idempotent=True,
+        )
+    except HTTPException:
+        db.finish_after_sale_attempt(
+            request_no=request.get("request_no"),
+            username=customer,
+            attempt_no=attempt["attempt_no"],
+            status="failed",
+            operator=username,
+            error_code="retry_rejected",
+            error_message="重试时订单状态或业务条件不满足",
+        )
+        db.update_after_sale_request(
+            request.get("request_no"),
+            customer,
+            "failed",
+            "重试时订单状态或业务条件不满足",
+        )
+        raise
+    except Exception as exc:
+        logger.exception("售后重试失败 request_no=%s：%s", request.get("request_no"), exc)
+        db.finish_after_sale_attempt(
+            request_no=request.get("request_no"),
+            username=customer,
+            attempt_no=attempt["attempt_no"],
+            status="failed",
+            operator=username,
+            error_code="retry_failed",
+            error_message=str(exc),
+        )
+        db.update_after_sale_request(
+            request.get("request_no"),
+            customer,
+            "failed",
+            str(exc),
+        )
+        raise HTTPException(status_code=500, detail="售后申请重试失败，失败原因已记录，请稍后重试")
+
+
+@app.post("/api/escalations/{ticket_id}/cancel-request")
+def submit_ticket_cancel_request(
+    ticket_id: int,
+    payload: AfterSaleRequestSubmit,
+    username: str = Depends(auth.require_agent_permission("ticket.reply")),
+):
+    """客服确认后原子取消未发货订单，并完成取消申请。"""
+    if not payload.confirmed:
+        raise HTTPException(status_code=400, detail="请确认后再取消订单")
+
+    ticket = db.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    if ticket.get("status") not in ("escalated", "in_progress", "waiting_customer"):
+        raise HTTPException(status_code=409, detail="已结束工单不能取消订单")
+    if ticket.get("assigned_to") and ticket.get("assigned_to") != username:
+        raise HTTPException(status_code=409, detail="该工单正在由其他坐席处理")
+
+    annotation = db.get_ticket_after_sale_annotation(ticket_id)
+    if not annotation or annotation.get("request_type") != "cancel":
+        raise HTTPException(status_code=409, detail="请先将工单标注为取消订单")
+
+    order_id = (annotation.get("order_id") or "").strip()
+    if not order_id:
+        raise HTTPException(status_code=400, detail="请先填写并核验订单号")
+
+    customer = ticket.get("username") or ""
+    order = db.get_order_for_user(customer, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="订单不存在或不属于当前客户")
+    if order.get("status") not in {"待发货", "已取消"}:
+        if order.get("status") in {"已发货", "运输中", "派送中"}:
+            raise HTTPException(
+                status_code=409,
+                detail="订单已经发货，不能直接取消；请联系快递拦截，或签收后申请退货退款",
+            )
+        raise HTTPException(
+            status_code=409,
+            detail=f"订单当前状态为“{order.get('status') or '未知'}”，不能在线取消",
+        )
+
+    request_key = after_sale.idempotency_key(customer, "cancel", order_id)
+    existing_request = db.find_after_sale_by_idempotency(customer, request_key)
+    attempt = None
+    if existing_request is not None and existing_request.get("status") == "failed":
+        attempt = _start_staff_after_sale_attempt(ticket_id, customer, username, existing_request)
+    try:
+        outcome = db.cancel_order_with_request(
+            username=customer,
+            order_id=order_id,
+            idempotency_key=request_key,
+            ticket_id=ticket_id,
+            reason=(annotation.get("reason") or "").strip() or "客户申请取消订单",
+            detail=f"客服工单 #{ticket_id} 办理取消订单",
+        )
+    except Exception as exc:
+        if existing_request is not None:
+            _finish_staff_after_sale_attempt(
+                customer,
+                existing_request,
+                attempt,
+                "failed",
+                error_code="cancel_execution_failed",
+                error_message=str(exc),
+                operator=username,
+            )
+            db.update_after_sale_request(
+                existing_request.get("request_no"),
+                customer,
+                "failed",
+                str(exc),
+            )
+        raise
+    if outcome.get("outcome") == "not_found":
+        raise HTTPException(status_code=404, detail="订单不存在或不属于当前客户")
+    if outcome.get("outcome") == "not_cancelable":
+        current_status = (outcome.get("order") or {}).get("status") or "未知"
+        raise HTTPException(
+            status_code=409,
+            detail=f"订单当前状态为“{current_status}”，不能在线取消",
+        )
+
+    request = outcome["request"]
+    if attempt is None and existing_request is None:
+        attempt = _start_staff_after_sale_attempt(ticket_id, customer, username, request)
+    if attempt is not None:
+        _finish_staff_after_sale_attempt(
+            customer,
+            request,
+            attempt,
+            "succeeded",
+            "取消订单重试成功",
+            username,
+        )
+    updated_annotation = db.upsert_ticket_after_sale_annotation(
+        ticket_id=ticket_id,
+        request_type="cancel",
+        stage="completed",
+        order_id=order_id,
+        product=(outcome.get("order") or order).get("product"),
+        reason=annotation.get("reason"),
+        item_status=annotation.get("item_status"),
+        note=annotation.get("note"),
+        operator=username,
+    )
+    if updated_annotation is None:
+        raise HTTPException(status_code=500, detail="订单已取消，但工单标注更新失败，请刷新后重试")
+
+    request_public = after_sale.public_request(request)
+    annotation_public = after_sale.public_annotation(updated_annotation)
+    db.insert_ticket_log(
+        ticket_id,
+        "after_sale_completed",
+        f"已完成取消订单 {request_public.get('request_no')}",
+        username,
+    )
+    payload_data = {
+        "ticket_id": ticket_id,
+        "username": customer,
+        "status": ticket.get("status"),
+        "assigned_to": ticket.get("assigned_to"),
+        "after_sale": request_public,
+        "after_sale_annotation": annotation_public,
+    }
+    events.broker.publish("ticket_updated", payload_data)
+    events.broker.publish(
+        "after_sale_updated",
+        {
+            "ticket_id": ticket_id,
+            "username": customer,
+            "after_sale": request_public,
+        },
+    )
+    return {
+        "status": "ok",
+        "id": ticket_id,
+        "idempotent": bool(outcome.get("idempotent")),
+        "after_sale": request_public,
+        "annotation": annotation_public,
+        "order": after_sale.public_order_context(outcome.get("order") or order),
+    }
+
+
+@app.post("/api/escalations/{ticket_id}/refund-request")
+def submit_ticket_refund_request(
+    ticket_id: int,
+    payload: AfterSaleRequestSubmit,
+    username: str = Depends(auth.require_agent_permission("ticket.reply")),
+):
+    """客服确认后创建真实退款申请。"""
+    return _submit_ticket_after_sale_request(
+        ticket_id,
+        payload,
+        username,
+        request_type="refund",
+        request_label="退款申请",
+        processing_result="客服已提交退款申请，等待人工审核",
+        reason_label="退款原因",
+        reject_existing_refund=True,
+    )
+
+
+@app.post("/api/escalations/{ticket_id}/repair-request")
+def submit_ticket_repair_request(
+    ticket_id: int,
+    payload: AfterSaleRequestSubmit,
+    username: str = Depends(auth.require_agent_permission("ticket.reply")),
+):
+    """客服确认后创建真实维修申请。"""
+    return _submit_ticket_after_sale_request(
+        ticket_id,
+        payload,
+        username,
+        request_type="repair",
+        request_label="维修申请",
+        processing_result="客服已提交维修申请，等待人工处理",
+        reason_label="故障描述",
+    )
+
+
+@app.get("/api/escalations/{ticket_id}/order-context")
+def verify_ticket_order_context(
+    ticket_id: int,
+    order_id: str,
+    username: str = Depends(auth.require_agent_permission("ticket.view")),
+):
+    """按当前工单客户核验订单，并返回只读商品上下文。"""
+    ticket = db.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    if ticket.get("status") not in (
+        "escalated", "in_progress", "waiting_customer", "resolved", "closed"
+    ):
+        raise HTTPException(status_code=409, detail="该工单不是人工服务工单")
+
+    normalized_order_id = (order_id or "").strip()
+    if not normalized_order_id:
+        raise HTTPException(status_code=400, detail="订单号不能为空")
+    order = db.get_order_for_user(ticket.get("username"), normalized_order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="未找到该客户的订单")
+    return {
+        "status": "ok",
+        "ticket_id": ticket_id,
+        "order_context": after_sale.public_order_context(order),
+    }
 
 
 @app.get("/api/agents")
@@ -1106,6 +2201,46 @@ def get_stats(username: str = Depends(auth.require_manager)):
         "top_questions": metrics.top_questions(10),
         "emotion_trend": metrics.emotion_trend(7),
         "feedback_tags": tag_dist,
+    }
+
+
+@app.get("/api/manager/after-sales")
+def list_manager_after_sales(
+    request_type: str = "",
+    status: str = "",
+    order_id: str = "",
+    limit: int = 100,
+    username: str = Depends(auth.require_manager),
+):
+    """经理查看全量售后申请摘要和来源工单信息。"""
+    normalized_type, normalized_status = _validate_after_sale_filters(request_type, status)
+    requests = db.search_after_sale_requests(
+        request_type=normalized_type,
+        status=normalized_status,
+        order_id=order_id.strip() or None,
+        limit=limit,
+    )
+    return [after_sale.public_staff_request(item) for item in requests]
+
+
+@app.get("/api/manager/after-sales/{request_no}/audit")
+def get_manager_after_sale_audit(
+    request_no: str,
+    username: str = Depends(auth.require_manager),
+):
+    """经理查看单笔售后申请的完整来源工单审计。"""
+    request = db.get_after_sale_request(request_no.strip())
+    if request is None:
+        raise HTTPException(status_code=404, detail="售后申请不存在")
+    ticket_id = request.get("ticket_id")
+    logs = db.list_ticket_logs(ticket_id) if ticket_id else []
+    return {
+        "request": after_sale.public_staff_request(request),
+        "audit": [after_sale.public_audit_log(item) for item in logs],
+        "attempts": [
+            after_sale.public_attempt(item)
+            for item in db.list_after_sale_attempts(request.get("request_no"))
+        ],
     }
 
 

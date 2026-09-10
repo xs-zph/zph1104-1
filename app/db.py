@@ -87,6 +87,26 @@ CREATE TABLE IF NOT EXISTS ticket_feedback_tags (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+# 当前售后标注表：每张人工工单只保留一条最新业务标注，历史由 ticket_logs 留痕。
+_TICKET_AFTER_SALE_ANNOTATIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ticket_after_sale_annotations (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    ticket_id     INT NOT NULL UNIQUE,
+    request_type  VARCHAR(16) NOT NULL,
+    stage         VARCHAR(40) NOT NULL,
+    order_id      VARCHAR(64),
+    product       VARCHAR(255),
+    reason        VARCHAR(255),
+    item_status   VARCHAR(64),
+    note          TEXT,
+    operator      VARCHAR(64),
+    created_at    DATETIME NOT NULL,
+    updated_at    DATETIME NOT NULL,
+    INDEX idx_tasa_ticket (ticket_id),
+    INDEX idx_tasa_type_stage (request_type, stage)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 # 知识库条目表（FAQ 的结构化源，支持软删除 / 编辑 / 审计）
 _FAQ_ENTRIES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS faq_entries (
@@ -211,6 +231,52 @@ CREATE TABLE IF NOT EXISTS conversation_memory_messages (
     content         TEXT NOT NULL,
     created_at      DATETIME NOT NULL,
     INDEX idx_conversation_memory (username, conversation_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# 统一售后申请表：取消/退货/退款/维修共用，幂等键防止重复提交。
+_AFTER_SALE_REQUESTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS after_sale_requests (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    request_no      VARCHAR(40) NOT NULL UNIQUE,
+    idempotency_key VARCHAR(64) NOT NULL UNIQUE,
+    ticket_id       INT,
+    username        VARCHAR(64) NOT NULL,
+    order_id        VARCHAR(64) NOT NULL,
+    request_type    VARCHAR(16) NOT NULL,
+    status          VARCHAR(32) NOT NULL,
+    reason          VARCHAR(255),
+    detail          TEXT,
+    result          TEXT,
+    created_at      DATETIME NOT NULL,
+    updated_at      DATETIME NOT NULL,
+    confirmed_at    DATETIME,
+    completed_at    DATETIME,
+    INDEX idx_after_sale_user (username, id),
+    INDEX idx_after_sale_order (username, order_id),
+    INDEX idx_after_sale_status (username, status),
+    INDEX idx_after_sale_ticket (ticket_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+# 售后真实执行尝试：申请表保存当前状态，本表保存每次提交/重试的完整轨迹。
+_AFTER_SALE_ATTEMPTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS after_sale_attempts (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    request_no      VARCHAR(40) NOT NULL,
+    username        VARCHAR(64) NOT NULL,
+    ticket_id       INT,
+    attempt_no      INT NOT NULL,
+    status          VARCHAR(16) NOT NULL, -- started / succeeded / failed
+    error_code      VARCHAR(64),
+    error_message   TEXT,
+    result          TEXT,
+    operator        VARCHAR(64),
+    created_at      DATETIME NOT NULL,
+    updated_at      DATETIME NOT NULL,
+    UNIQUE KEY uq_after_sale_attempt (request_no, attempt_no),
+    INDEX idx_after_sale_attempt_request (request_no, id),
+    INDEX idx_after_sale_attempt_status (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -344,12 +410,15 @@ def init_db():
             cur.execute(_TICKET_LOGS_SCHEMA)
             cur.execute(_TICKET_MESSAGES_SCHEMA)
             cur.execute(_FEEDBACK_TAGS_SCHEMA)
+            cur.execute(_TICKET_AFTER_SALE_ANNOTATIONS_SCHEMA)
             cur.execute(_FAQ_ENTRIES_SCHEMA)
             cur.execute(_FAQ_AUDIT_SCHEMA)
             cur.execute(_PROFILE_FACTS_SCHEMA)
             cur.execute(_AGENT_BLACKBOARD_SCHEMA)
             cur.execute(_CONVERSATION_STATE_SCHEMA)
             cur.execute(_CONVERSATION_MESSAGES_SCHEMA)
+            cur.execute(_AFTER_SALE_REQUESTS_SCHEMA)
+            cur.execute(_AFTER_SALE_ATTEMPTS_SCHEMA)
             _migrate(cur)
     finally:
         conn.close()
@@ -389,6 +458,7 @@ def _migrate(cur):
     _ensure_column(cur, "users", "permissions", "permissions TEXT")
     _ensure_column(cur, "users", "phone", "phone VARCHAR(32)")
     _ensure_column(cur, "users", "phone_verified_at", "phone_verified_at DATETIME")
+    _ensure_column(cur, "after_sale_requests", "ticket_id", "ticket_id INT")
     cur.execute(
         "UPDATE tickets SET priority = COALESCE(priority, 'normal'), "
         "sla_due_at = COALESCE(sla_due_at, TIMESTAMPADD(MINUTE, %s, created_at)) "
@@ -514,6 +584,20 @@ def list_escalations(limit: int = 50) -> list[dict]:
             tickets = cur.fetchall()
             for ticket in tickets:
                 ticket["messages"] = _list_ticket_messages(cur, ticket["id"])
+                ticket["after_sale_annotation"] = _get_ticket_after_sale_annotation(
+                    cur, ticket["id"]
+                )
+                if ticket.get("after_sale_annotation"):
+                    ticket["after_sale_request"] = _get_after_sale_request_for_ticket(
+                        cur, ticket["id"]
+                    )
+                    if ticket.get("after_sale_request"):
+                        ticket["after_sale_request"].update(
+                            _get_after_sale_attempt_summary(
+                                cur, ticket["after_sale_request"].get("request_no")
+                            )
+                        )
+                ticket["order_context"] = _get_order_for_ticket_annotation(cur, ticket)
             return tickets
     finally:
         conn.close()
@@ -856,6 +940,118 @@ def update_ticket_reply(ticket_id: int, human_answer: str, operator: str) -> boo
                 (human_answer, operator, ticket_id, operator),
             )
             return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def _get_ticket_after_sale_annotation(cur, ticket_id: int) -> dict | None:
+    cur.execute(
+        "SELECT * FROM ticket_after_sale_annotations WHERE ticket_id = %s",
+        (ticket_id,),
+    )
+    return cur.fetchone()
+
+
+def _get_after_sale_request_for_ticket(cur, ticket_id: int) -> dict | None:
+    cur.execute(
+        "SELECT * FROM after_sale_requests WHERE ticket_id = %s "
+        "ORDER BY id DESC LIMIT 1",
+        (ticket_id,),
+    )
+    return cur.fetchone()
+
+
+def _get_after_sale_attempt_summary(cur, request_no: str | None) -> dict:
+    if not request_no:
+        return {
+            "attempt_count": 0,
+            "last_attempt_status": None,
+            "last_attempt_error": None,
+            "last_attempt_operator": None,
+        }
+    cur.execute(
+        "SELECT COUNT(*) AS attempt_count "
+        "FROM after_sale_attempts WHERE request_no = %s",
+        (request_no,),
+    )
+    count_row = cur.fetchone() or {}
+    cur.execute(
+        "SELECT status AS last_attempt_status, error_message AS last_attempt_error, "
+        "operator AS last_attempt_operator "
+        "FROM after_sale_attempts WHERE request_no = %s "
+        "ORDER BY attempt_no DESC LIMIT 1",
+        (request_no,),
+    )
+    latest = cur.fetchone() or {}
+    return {
+        "attempt_count": count_row.get("attempt_count") or 0,
+        "last_attempt_status": latest.get("last_attempt_status"),
+        "last_attempt_error": latest.get("last_attempt_error"),
+        "last_attempt_operator": latest.get("last_attempt_operator"),
+    }
+
+
+def _get_order_for_ticket_annotation(cur, ticket: dict) -> dict | None:
+    annotation = ticket.get("after_sale_annotation") or {}
+    order_id = (annotation.get("order_id") or "").strip()
+    username = (ticket.get("username") or "").strip()
+    if not order_id or not username:
+        return None
+    cur.execute(
+        "SELECT order_id, username, product, status, tracking_no, logistics, refund_status "
+        "FROM orders WHERE order_id = %s AND username = %s",
+        (order_id, username),
+    )
+    return cur.fetchone()
+
+
+def get_ticket_after_sale_annotation(ticket_id: int) -> dict | None:
+    """读取一张人工工单当前的售后标注。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            return _get_ticket_after_sale_annotation(cur, ticket_id)
+    finally:
+        conn.close()
+
+
+def upsert_ticket_after_sale_annotation(
+    ticket_id: int,
+    request_type: str,
+    stage: str,
+    order_id: str | None = None,
+    product: str | None = None,
+    reason: str | None = None,
+    item_status: str | None = None,
+    note: str | None = None,
+    operator: str | None = None,
+) -> dict | None:
+    """保存工单当前售后标注；同一工单始终只有一条当前记录。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO ticket_after_sale_annotations "
+                "(ticket_id, request_type, stage, order_id, product, reason, "
+                "item_status, note, created_at, updated_at, operator) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE "
+                "request_type = VALUES(request_type), "
+                "stage = VALUES(stage), "
+                "order_id = VALUES(order_id), "
+                "product = VALUES(product), "
+                "reason = VALUES(reason), "
+                "item_status = VALUES(item_status), "
+                "note = VALUES(note), "
+                "updated_at = VALUES(updated_at), "
+                "operator = VALUES(operator)",
+                (
+                    ticket_id, request_type, stage, order_id, product, reason,
+                    item_status, note, now, now, operator,
+                ),
+            )
+            return _get_ticket_after_sale_annotation(cur, ticket_id)
     finally:
         conn.close()
 
@@ -1321,6 +1517,585 @@ def cancel_order(username: str, order_id: str) -> dict | None:
             if cur.rowcount == 0:
                 return None
         return get_order_for_user(username, order_id)
+    finally:
+        conn.close()
+
+
+def cancel_order_with_request(
+    username: str,
+    order_id: str,
+    idempotency_key: str,
+    ticket_id: int,
+    reason: str | None = None,
+    detail: str | None = None,
+) -> dict:
+    """在同一事务内完成订单取消和取消申请落库。
+
+    订单状态和售后申请是一个业务动作：只要其中一步失败，另一边也不能
+    留下成功状态。订单行锁还可以把并发点击收敛到同一个结果。
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    result_text = "订单已取消"
+    conn = _connect()
+    try:
+        conn.begin()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM orders WHERE order_id = %s AND username = %s "
+                "FOR UPDATE",
+                (order_id, username),
+            )
+            order = cur.fetchone()
+            if order is None:
+                conn.rollback()
+                return {"outcome": "not_found"}
+
+            cur.execute(
+                "SELECT * FROM after_sale_requests "
+                "WHERE username = %s AND idempotency_key = %s FOR UPDATE",
+                (username, idempotency_key),
+            )
+            existing = cur.fetchone()
+            original_status = order.get("status")
+            if original_status not in {"待发货", "已取消"}:
+                conn.rollback()
+                return {
+                    "outcome": "not_cancelable",
+                    "order": order,
+                    "request": existing,
+                }
+
+            if original_status == "待发货":
+                cur.execute(
+                    "UPDATE orders SET status = '已取消' "
+                    "WHERE order_id = %s AND username = %s AND status = '待发货'",
+                    (order_id, username),
+                )
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    return {
+                        "outcome": "not_cancelable",
+                        "order": order,
+                        "request": existing,
+                    }
+                order = dict(order)
+                order["status"] = "已取消"
+
+            if existing is not None:
+                cur.execute(
+                    "UPDATE after_sale_requests SET ticket_id = COALESCE(ticket_id, %s), "
+                    "status = 'completed', reason = COALESCE(reason, %s), "
+                    "detail = COALESCE(detail, %s), result = %s, updated_at = %s, "
+                    "confirmed_at = COALESCE(confirmed_at, %s), completed_at = %s "
+                    "WHERE id = %s",
+                    (
+                        ticket_id,
+                        reason,
+                        detail,
+                        result_text,
+                        now,
+                        now,
+                        now,
+                        existing.get("id"),
+                    ),
+                )
+                request = dict(existing)
+                request.update(
+                    {
+                        "ticket_id": existing.get("ticket_id") or ticket_id,
+                        "status": "completed",
+                        "reason": existing.get("reason") or reason,
+                        "detail": existing.get("detail") or detail,
+                        "result": result_text,
+                        "updated_at": now,
+                        "confirmed_at": existing.get("confirmed_at") or now,
+                        "completed_at": now,
+                    }
+                )
+            else:
+                request_no = _new_after_sale_request_no()
+                cur.execute(
+                    "INSERT INTO after_sale_requests "
+                    "(request_no, idempotency_key, ticket_id, username, order_id, "
+                    "request_type, status, reason, detail, result, created_at, "
+                    "updated_at, confirmed_at, completed_at) "
+                    "VALUES (%s, %s, %s, %s, %s, 'cancel', 'completed', %s, %s, "
+                    "%s, %s, %s, %s, %s)",
+                    (
+                        request_no,
+                        idempotency_key,
+                        ticket_id,
+                        username,
+                        order_id,
+                        reason,
+                        detail,
+                        result_text,
+                        now,
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                request = {
+                    "request_no": request_no,
+                    "idempotency_key": idempotency_key,
+                    "ticket_id": ticket_id,
+                    "username": username,
+                    "order_id": order_id,
+                    "request_type": "cancel",
+                    "status": "completed",
+                    "reason": reason,
+                    "detail": detail,
+                    "result": result_text,
+                    "created_at": now,
+                    "updated_at": now,
+                    "confirmed_at": now,
+                    "completed_at": now,
+                }
+        conn.commit()
+        return {
+            "outcome": "completed",
+            "idempotent": existing is not None or original_status == "已取消",
+            "order": order,
+            "request": request,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+# ---------------- 统一售后流程 ----------------
+
+def _new_after_sale_request_no() -> str:
+    """生成客户可引用的售后申请号。"""
+    return "AS" + datetime.now().strftime("%Y%m%d%H%M%S") + uuid4().hex[:8].upper()
+
+
+def get_after_sale_request(request_no: str, username: str | None = None) -> dict | None:
+    """按申请号查询售后记录，并可同时校验客户归属。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            if username:
+                cur.execute(
+                    "SELECT * FROM after_sale_requests "
+                    "WHERE request_no = %s AND username = %s",
+                    (request_no, username),
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM after_sale_requests WHERE request_no = %s",
+                    (request_no,),
+                )
+            request = cur.fetchone()
+            if request:
+                request.update(
+                    _get_after_sale_attempt_summary(cur, request.get("request_no"))
+                )
+            return request
+    finally:
+        conn.close()
+
+
+def find_after_sale_by_idempotency(username: str, idempotency_key: str) -> dict | None:
+    """按用户和幂等键查询已有售后申请。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM after_sale_requests "
+                "WHERE username = %s AND idempotency_key = %s",
+                (username, idempotency_key),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_active_after_sale(username: str, request_type: str) -> dict | None:
+    """读取当前用户指定类型的未结束售后申请。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM after_sale_requests "
+                "WHERE username = %s AND request_type = %s "
+                "AND status IN ('draft', 'pending_confirmation', 'processing') "
+                "ORDER BY id DESC LIMIT 1",
+                (username, request_type),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def create_after_sale_request(
+    username: str,
+    order_id: str,
+    request_type: str,
+    status: str,
+    idempotency_key: str,
+    reason: str | None = None,
+    detail: str | None = None,
+    ticket_id: int | None = None,
+) -> dict:
+    """创建售后草稿；相同幂等键重复提交时返回原记录。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _connect()
+    try:
+        conn.begin()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM after_sale_requests "
+                "WHERE username = %s AND idempotency_key = %s FOR UPDATE",
+                (username, idempotency_key),
+            )
+            existing = cur.fetchone()
+            if existing:
+                conn.commit()
+                return existing
+            request_no = _new_after_sale_request_no()
+            cur.execute(
+                "INSERT INTO after_sale_requests "
+                "(request_no, idempotency_key, ticket_id, username, order_id, request_type, status, "
+                "reason, detail, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    request_no, idempotency_key, ticket_id, username, order_id,
+                    request_type, status, reason, detail, now, now,
+                ),
+            )
+            request_id = cur.lastrowid
+        conn.commit()
+        return get_after_sale_request(request_no, username) or {
+            "id": request_id,
+            "request_no": request_no,
+            "idempotency_key": idempotency_key,
+            "ticket_id": ticket_id,
+            "username": username,
+            "order_id": order_id,
+            "request_type": request_type,
+            "status": status,
+            "reason": reason,
+            "detail": detail,
+            "created_at": now,
+            "updated_at": now,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def update_after_sale_request(
+    request_no: str,
+    username: str,
+    status: str,
+    result: str | None = None,
+) -> dict | None:
+    """原子更新客户自己的售后状态。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    completed_at = now if status in {"completed", "rejected", "cancelled", "failed"} else None
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE after_sale_requests SET status = %s, result = %s, "
+                "updated_at = %s, confirmed_at = CASE WHEN %s IN "
+                "('processing', 'completed') AND confirmed_at IS NULL THEN %s "
+                "ELSE confirmed_at END, completed_at = %s "
+                "WHERE request_no = %s AND username = %s",
+                (status, result, now, status, now, completed_at, request_no, username),
+            )
+        return get_after_sale_request(request_no, username)
+    finally:
+        conn.close()
+
+
+def start_after_sale_attempt(
+    request_no: str,
+    username: str,
+    operator: str | None = None,
+    ticket_id: int | None = None,
+    require_status: str | None = None,
+    processing_result: str | None = None,
+) -> dict:
+    """为原售后申请创建下一次执行尝试，不创建新的申请号。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _connect()
+    try:
+        conn.begin()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT request_no, username, ticket_id FROM after_sale_requests "
+                "WHERE request_no = %s AND username = %s FOR UPDATE",
+                (request_no, username),
+            )
+            request = cur.fetchone()
+            if request is None:
+                conn.rollback()
+                raise ValueError("售后申请不存在")
+            if require_status and request.get("status") != require_status:
+                conn.rollback()
+                raise ValueError("售后申请当前不可重试")
+            cur.execute(
+                "SELECT COALESCE(MAX(attempt_no), 0) + 1 AS next_attempt "
+                "FROM after_sale_attempts WHERE request_no = %s FOR UPDATE",
+                (request_no,),
+            )
+            next_attempt = int((cur.fetchone() or {}).get("next_attempt") or 1)
+            cur.execute(
+                "INSERT INTO after_sale_attempts "
+                "(request_no, username, ticket_id, attempt_no, status, operator, "
+                "created_at, updated_at) VALUES (%s, %s, %s, %s, 'started', %s, %s, %s)",
+                (
+                    request_no,
+                    username,
+                    ticket_id if ticket_id is not None else request.get("ticket_id"),
+                    next_attempt,
+                    operator,
+                    now,
+                    now,
+                ),
+            )
+            if require_status:
+                cur.execute(
+                    "UPDATE after_sale_requests SET status = 'processing', "
+                    "result = %s, updated_at = %s WHERE request_no = %s "
+                    "AND username = %s AND status = %s",
+                    (
+                        processing_result or "售后申请正在重试",
+                        now,
+                        request_no,
+                        username,
+                        require_status,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    raise ValueError("售后申请已被其他坐席领取")
+        conn.commit()
+        return {
+            "request_no": request_no,
+            "username": username,
+            "ticket_id": ticket_id if ticket_id is not None else request.get("ticket_id"),
+            "attempt_no": next_attempt,
+            "status": "started",
+            "operator": operator,
+            "created_at": now,
+            "updated_at": now,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def finish_after_sale_attempt(
+    request_no: str,
+    username: str,
+    attempt_no: int,
+    status: str,
+    operator: str | None = None,
+    result: str | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> dict:
+    """完成一次售后尝试，并保留失败原因，不覆盖历史尝试。"""
+    if status not in {"succeeded", "failed"}:
+        raise ValueError("售后尝试结束状态不合法")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE after_sale_attempts SET status = %s, operator = COALESCE(%s, operator), "
+                "result = %s, error_code = %s, error_message = %s, updated_at = %s "
+                "WHERE request_no = %s AND username = %s AND attempt_no = %s",
+                (
+                    status,
+                    operator,
+                    result,
+                    error_code,
+                    error_message,
+                    now,
+                    request_no,
+                    username,
+                    attempt_no,
+                ),
+            )
+        return {
+            "request_no": request_no,
+            "username": username,
+            "attempt_no": attempt_no,
+            "status": status,
+            "operator": operator,
+            "result": result,
+            "error_code": error_code,
+            "error_message": error_message,
+            "updated_at": now,
+        }
+    finally:
+        conn.close()
+
+
+def list_after_sale_attempts(request_no: str, username: str | None = None) -> list[dict]:
+    """查询售后申请的执行尝试，客户归属参数存在时强制校验归属。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            if username:
+                cur.execute(
+                    "SELECT * FROM after_sale_attempts "
+                    "WHERE request_no = %s AND username = %s ORDER BY attempt_no ASC",
+                    (request_no, username),
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM after_sale_attempts "
+                    "WHERE request_no = %s ORDER BY attempt_no ASC",
+                    (request_no,),
+                )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_after_sale_attempt_summary(request_no: str) -> dict:
+    """返回客服/经理列表所需的尝试次数和最后一次结果。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            return _get_after_sale_attempt_summary(cur, request_no)
+    finally:
+        conn.close()
+
+
+def list_after_sale_requests(username: str, limit: int = 20) -> list[dict]:
+    """列出当前用户的售后申请，按最新创建时间排序。"""
+    limit = max(1, min(int(limit), 100))
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM after_sale_requests WHERE username = %s "
+                "ORDER BY id DESC LIMIT %s",
+                (username, limit),
+            )
+            requests = cur.fetchall()
+            for request in requests:
+                request.update(
+                    _get_after_sale_attempt_summary(cur, request.get("request_no"))
+                )
+            return requests
+    finally:
+        conn.close()
+
+
+def search_after_sale_requests(
+    request_type: str | None = None,
+    status: str | None = None,
+    order_id: str | None = None,
+    username: str | None = None,
+    ticket_id: int | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """按业务条件查询售后申请，并带上来源工单的只读摘要。"""
+    clauses = []
+    params: list = []
+    if request_type:
+        clauses.append("r.request_type = %s")
+        params.append(request_type)
+    if status:
+        clauses.append("r.status = %s")
+        params.append(status)
+    if order_id:
+        clauses.append("r.order_id = %s")
+        params.append(order_id)
+    if username:
+        clauses.append("r.username = %s")
+        params.append(username)
+    if ticket_id is not None:
+        clauses.append("r.ticket_id = %s")
+        params.append(ticket_id)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    limit = max(1, min(int(limit), 200))
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT r.*, t.ticket_text AS source_ticket_text, "
+                "t.status AS source_ticket_status, t.assigned_to AS source_assigned_to "
+                "FROM after_sale_requests r "
+                "LEFT JOIN tickets t ON t.id = r.ticket_id "
+                f"{where} ORDER BY r.id DESC LIMIT %s",
+                [*params, limit],
+            )
+            requests = cur.fetchall()
+            for request in requests:
+                request.update(
+                    _get_after_sale_attempt_summary(cur, request.get("request_no"))
+                )
+            return requests
+    finally:
+        conn.close()
+
+
+def get_after_sale_request_for_ticket(ticket_id: int) -> dict | None:
+    """读取某张工单最近关联的售后申请。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            request = _get_after_sale_request_for_ticket(cur, ticket_id)
+            if request:
+                request.update(
+                    _get_after_sale_attempt_summary(cur, request.get("request_no"))
+                )
+            return request
+    finally:
+        conn.close()
+
+
+def get_after_sale_request_with_attempts(
+    request_no: str,
+    username: str | None = None,
+) -> tuple[dict | None, list[dict]]:
+    """读取售后申请及尝试记录；可按客户归属限制查询。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            if username:
+                cur.execute(
+                    "SELECT * FROM after_sale_requests "
+                    "WHERE request_no = %s AND username = %s",
+                    (request_no, username),
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM after_sale_requests WHERE request_no = %s",
+                    (request_no,),
+                )
+            request = cur.fetchone()
+            if request is None:
+                return None, []
+            if username:
+                cur.execute(
+                    "SELECT * FROM after_sale_attempts "
+                    "WHERE request_no = %s AND username = %s ORDER BY attempt_no ASC",
+                    (request_no, username),
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM after_sale_attempts "
+                    "WHERE request_no = %s ORDER BY attempt_no ASC",
+                    (request_no,),
+                )
+            return request, list(cur.fetchall())
     finally:
         conn.close()
 

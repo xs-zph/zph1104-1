@@ -72,6 +72,31 @@ class MCPAdapterTests(unittest.TestCase):
         }
         self.assertIn("query_logistics", names)
 
+    def test_agent_does_not_expose_high_risk_write_tools_to_model(self):
+        with patch.object(agent.profile, "get_context", return_value=""), \
+             patch.object(agent.llm, "complete_with_tools", return_value="收到") as complete:
+            agent.run_agent("我想取消订单 A100", "user")
+
+        names = {
+            tool["function"]["name"]
+            for tool in complete.call_args.kwargs["tools"]
+        }
+        self.assertNotIn("cancel_order", names)
+        self.assertNotIn("apply_after_sale", names)
+
+    def test_legacy_apply_after_sale_cannot_bypass_confirmation_flow(self):
+        with patch.object(agent.db, "get_order_for_user") as get_order, \
+             patch.object(agent.db, "insert_ticket") as insert_ticket:
+            reply = agent._execute_tool(
+                "apply_after_sale",
+                {"order_id": "A20240812001", "issue": "左耳无声"},
+                "user",
+            )
+
+        self.assertIn("确认提交维修", reply)
+        get_order.assert_not_called()
+        insert_ticket.assert_not_called()
+
     def test_deterministic_logistics_query_lists_orders_before_answering(self):
         mcp_tool = {"type": "function", "function": {"name": "list_my_orders"}}
         payload = json.dumps({"orders": [{

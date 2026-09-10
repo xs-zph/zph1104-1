@@ -24,6 +24,7 @@ let humanResponseEventSource = null;
 let humanResponseReconnectTimer = null;
 let humanResponseRetryDelay = 1000;
 let humanResponseCursor = "";
+const seenAfterSaleRequests = new Set();
 
 function authHeaders() {
   return {
@@ -89,7 +90,18 @@ chatForm.addEventListener("submit", async (e) => {
         window.location.href = "/login";
         return;
       }
-      throw new Error(await resp.text());
+      let message = "";
+      try {
+        const errorData = await resp.json();
+        message = typeof errorData?.detail === "string"
+          ? errorData.detail
+          : (typeof errorData?.reply === "string" ? errorData.reply : "");
+      } catch {
+        // 非 JSON 的 5xx 响应可能包含技术性文本，不直接展示给客户。
+      }
+      const error = new Error(message);
+      error.isApiError = true;
+      throw error;
     }
 
     const data = await resp.json();
@@ -98,6 +110,11 @@ chatForm.addEventListener("submit", async (e) => {
     const escalated = data.reply_source === "escalate";
     const queuedForHuman = data.reply_source === "human_queue";
     const serviceError = data.reply_source === "service_error";
+    if (humanHandoffActive && !escalated && !queuedForHuman) {
+      // 后端发现这是新的 AI 自助诉求并结束了旧人工会话；
+      // 页面也要同步解除人工状态，避免下一轮仍显示为人工处理中。
+      resetHumanHandoff();
+    }
     const responseType = queuedForHuman
       ? "human-pending"
       : (escalated ? "escalate" : (serviceError ? "service-error" : null));
@@ -113,7 +130,12 @@ chatForm.addEventListener("submit", async (e) => {
     }
   } catch (err) {
     typing?.remove();
-    appendMessage("ai", "抱歉，系统开小差了，请稍后再试。", null);
+    const message = err?.isApiError && err.message
+      ? `抱歉，${err.message}。`
+      : (err?.isApiError
+        ? "抱歉，客服服务暂时无法处理这条消息，请稍后重试。"
+        : "抱歉，暂时无法连接客服服务，请稍后重试。");
+    appendMessage("ai", message, null);
   } finally {
     sendBtn.disabled = false;
     chatInput.focus();
@@ -255,6 +277,19 @@ function handleHumanResponse(ticketId, answer, handoffActive = false) {
   appendMessage("ai", answer || "人工客服已处理您的问题。", "human-resolved");
 }
 
+function handleAfterSaleUpdate(data) {
+  const request = data?.after_sale;
+  if (!request?.request_no || seenAfterSaleRequests.has(request.request_no)) return;
+  seenAfterSaleRequests.add(request.request_no);
+  const label = request.request_type_label || "售后申请";
+  const status = request.status_label || "处理中";
+  appendMessage(
+    "ai",
+    `${label}已提交，申请号：${request.request_no}，当前状态：${status}。您可以在“我的售后”中查看进度。`,
+    "after-sale-update",
+  );
+}
+
 function startHumanResponseRealtime() {
   if (typeof EventSource === "undefined" || humanResponseEventSource !== null) return;
   const query = humanResponseCursor ? `?since=${encodeURIComponent(humanResponseCursor)}` : "";
@@ -274,6 +309,14 @@ function startHumanResponseRealtime() {
       handleHumanResponse(data.ticket_id, data.human_answer, data.handoff_active === true);
     } catch (err) {
       // 格式异常时由轮询补偿。
+    }
+  });
+  source.addEventListener("after_sale_updated", (event) => {
+    try {
+      humanResponseCursor = event.lastEventId || humanResponseCursor;
+      handleAfterSaleUpdate(JSON.parse(event.data));
+    } catch (err) {
+      // 格式异常时不影响人工回复监听。
     }
   });
   source.onerror = () => {
