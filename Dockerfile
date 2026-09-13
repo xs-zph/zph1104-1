@@ -12,8 +12,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./requirements.txt
+COPY requirements-ml.txt ./requirements-ml.txt
 RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
+    && pip install -r requirements.txt \
+    && pip install -r requirements-ml.txt
 
 COPY app ./app
 COPY data ./data

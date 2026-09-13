@@ -20,6 +20,7 @@
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -36,19 +37,6 @@ from app.schemas import AfterSaleAnnotationRequest, AfterSaleRequestSubmit, Afte
 
 logger = logging.getLogger("app.main")
 
-# 初始化日志 + 数据库 + 演示账号 + 演示订单
-setup_logging()
-db.init_db()
-if config.Config.DEMO_DATA_ENABLED:
-    auth.seed_users()
-    db.seed_orders()
-    db.seed_profile_facts()
-
-# 后台预热 RAG 向量化模型 + 确保知识库已从 faq.md 导入 MySQL 并同步到向量库
-# （避免首个 FAQ 请求等待模型冷加载；老库迁移时补种知识库表）
-threading.Thread(target=rag.warmup, daemon=True).start()
-threading.Thread(target=rag.ensure_faq_seeded, daemon=True).start()
-
 app = FastAPI(
     title="AI客服工单自动化系统",
     description="登录 → 聊天式 AI 客服 → 分类路由 → 模板 / RAG 回复 / 人工升级",
@@ -56,9 +44,36 @@ app = FastAPI(
 )
 
 
+def _initialize_runtime() -> None:
+    """在应用启动后初始化外部资源，避免导入模块时阻断部署。"""
+    setup_logging()
+    try:
+        db.init_db()
+    except Exception:  # noqa: BLE001
+        logger.exception("数据库初始化失败；应用仍可启动，数据库接口将在配置修复后恢复")
+        return
+
+    if config.Config.DEMO_DATA_ENABLED:
+        try:
+            auth.seed_users()
+            db.seed_orders()
+            db.seed_profile_facts()
+        except Exception:  # noqa: BLE001
+            logger.exception("演示数据初始化失败")
+
+    # 预热与知识库同步放到后台，避免冷启动阻塞请求；失败时由 RAG 自身回退。
+    threading.Thread(target=rag.warmup, name="rag-warmup", daemon=True).start()
+    threading.Thread(target=rag.ensure_faq_seeded, name="faq-seeder", daemon=True).start()
+
+
 @app.on_event("startup")
 def start_background_workers():
-    """启动不依赖前端的 SLA 扫描线程。"""
+    """启动运行时资源和不依赖前端的 SLA 扫描线程。"""
+    # Vercel 冷启动不应同步等待外部 MySQL；本地/Docker 则保持原有启动顺序。
+    if os.getenv("VERCEL", "").lower() in {"1", "true", "yes", "on"}:
+        threading.Thread(target=_initialize_runtime, name="runtime-init", daemon=True).start()
+    else:
+        _initialize_runtime()
     sla.worker.start()
 
 

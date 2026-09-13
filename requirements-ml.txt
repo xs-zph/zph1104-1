@@ -1,0 +1,4 @@
+# Optional local AI dependencies. Keep these out of the Vercel function bundle.
+# Install after requirements.txt when running the full local deployment.
+sentence-transformers>=2.6
+rapidocr-onnxruntime>=1.3

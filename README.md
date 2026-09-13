@@ -204,6 +204,8 @@ python -m pytest -q
 
 ```bash
 pip install -r requirements.txt
+# 可选：本地启用中文语义模型和 RapidOCR（Vercel 部署不需要）
+pip install -r requirements-ml.txt
 ```
 
 ### 2. 配置环境变量
@@ -258,7 +260,7 @@ MCP_TIMEOUT_SECONDS=8
 python scripts/seed_faq.py
 ```
 
-> 使用中文语义向量模型 **BAAI/bge-small-zh-v1.5**（首次运行自动下载，走 hf-mirror 镜像，国内友好）；模型不可用时自动回退本地哈希向量化兜底，保证服务不中断。
+> 使用中文语义向量模型 **BAAI/bge-small-zh-v1.5**（安装 `requirements-ml.txt` 后首次运行自动下载，走 hf-mirror 镜像，国内友好）；模型不可用或未安装时自动回退本地哈希向量化兜底，保证服务不中断。Vercel/Serverless 请只安装基础的 `requirements.txt`，避免把 PyTorch/CUDA 打进函数包。
 
 默认流程为「向量召回 Top10 → 本地 **bge-reranker-base** 精排 Top3」；精排模型未缓存或不可用时自动按向量距离排序。已有 Chroma 数据可在 Qdrant 启动后迁移：
 
@@ -266,7 +268,7 @@ python scripts/seed_faq.py
 python scripts/migrate_chroma_to_qdrant.py
 ```
 
-图片上传会先经过安全校验，再用 RapidOCR 提取图片文字并与视觉模型结果一起进入工单分类和 RAG；OCR 或视觉模型不可用时仍保留原有人工降级。
+图片上传会先经过安全校验，再用 RapidOCR（安装 `requirements-ml.txt` 后启用）提取图片文字并与视觉模型结果一起进入工单分类和 RAG；OCR 或视觉模型不可用时仍保留原有人工降级。
 
 ### 4. 启动系统
 
@@ -275,6 +277,28 @@ python run.py
 ```
 
 打开浏览器访问 **http://127.0.0.1:8000**，自动跳转到登录页。
+
+### 5. Vercel 部署
+
+Vercel 只安装基础 `requirements.txt`，不会打包本地语义模型、PyTorch 或 RapidOCR，
+因此可避免函数包超过 500 MB。请在 Vercel 项目 **Settings → Environment Variables**
+配置生产环境变量：
+
+```ini
+DEEPSEEK_API_KEY=你的密钥
+MYSQL_HOST=公网 MySQL 地址
+MYSQL_PORT=3306
+MYSQL_USER=数据库用户
+MYSQL_PASSWORD=数据库密码
+MYSQL_DB=ai_ticket
+QDRANT_ENABLED=false
+DEMO_DATA_ENABLED=false
+SESSION_COOKIE_SECURE=true
+```
+
+如果使用云端 Qdrant，将 `QDRANT_ENABLED` 设为 `true`，并同时配置
+`QDRANT_URL` 和 `QDRANT_API_KEY`。Vercel 的文件系统不可持久化，不能把本地
+MySQL、Chroma 或项目目录当作生产数据库；应用会把临时日志和 Chroma 回退数据写入 `/tmp`。
 
 ## 🔐 演示账号
 

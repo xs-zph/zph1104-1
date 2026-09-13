@@ -60,8 +60,16 @@ class Config:
     FAQ_PATH = DATA_DIR / "faq.md"
     FAQ_VARIANTS_PATH = DATA_DIR / "faq_variants.json"
     DOCS_DIR = DATA_DIR / "docs"      # 产品手册 / 政策文档（文档切块向量化用）
-    CHROMA_DIR = DATA_DIR / "chroma"
-    LOG_DIR = BASE_DIR / "logs"
+    # Vercel 函数文件系统只允许写入 /tmp；本地和 Docker 继续使用项目目录。
+    _VERCEL_RUNTIME = os.getenv("VERCEL", "").lower() in {"1", "true", "yes", "on"}
+    CHROMA_DIR = Path(os.getenv(
+        "CHROMA_DIR",
+        "/tmp/ai-ticket-chroma" if _VERCEL_RUNTIME else str(DATA_DIR / "chroma"),
+    ))
+    LOG_DIR = Path(os.getenv(
+        "LOG_DIR",
+        "/tmp/ai-ticket-logs" if _VERCEL_RUNTIME else str(BASE_DIR / "logs"),
+    ))
 
     # ---- MySQL 数据库 ----
     MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
@@ -151,7 +159,12 @@ class Config:
     @classmethod
     def ensure_dirs(cls):
         """确保运行时需要的目录都存在。"""
-        for d in (cls.DATA_DIR, cls.CHROMA_DIR, cls.DOCS_DIR, cls.LOG_DIR):
+        # Vercel 部署包只读；数据目录和文档目录仅用于读取随代码发布的文件，
+        # 运行时只创建 /tmp 下的向量库与日志目录。
+        dirs = (cls.CHROMA_DIR, cls.LOG_DIR) if cls._VERCEL_RUNTIME else (
+            cls.DATA_DIR, cls.CHROMA_DIR, cls.DOCS_DIR, cls.LOG_DIR
+        )
+        for d in dirs:
             d.mkdir(parents=True, exist_ok=True)
 
 
